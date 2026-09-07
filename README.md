@@ -1,192 +1,185 @@
 # ViTube
 
-Ein nativer YouTube-Client für die PlayStation Vita, geschrieben in C gegen
-VitaSDK/vita2d. ViTube spricht direkt mit YouTubes internem ("innertube")
-JSON-API, spielt Videos über die Vita-Hardware-Decoder ab und braucht dafür
-keinen eigenen Server, kein Konto und keinen Browser.
+A native YouTube client for the PlayStation Vita, written in C against
+VitaSDK/vita2d. ViTube talks directly to YouTube's internal ("innertube")
+JSON API, plays videos through the Vita's hardware decoders, and needs no
+companion server, no account, and no browser.
 
 ## Status
 
-Diese App wurde größtenteils per "Vibe Coding" (KI-gestützt, iterativ) gebaut,
-nicht komplett von Hand geschrieben. Sie funktioniert, ist aber
-früh/experimentell — **Nutzung auf eigene Gefahr, keine Garantie.**
-Ausführlichere Dokumentation folgt bei Gelegenheit.
+This app was built largely through "vibe coding" (AI-assisted, iterative
+development) rather than a from-scratch handwritten codebase. It works, but
+is early/experimental — **use at your own risk, no guarantees.** More
+thorough documentation will follow when time allows.
 
-**Download (fertiges VPK):** siehe [Releases](../../releases) — Installation
-per VitaShell oder einem beliebigen anderen Installer, benötigt
-HENkaku/Ensō.
+**Download (prebuilt VPK):** see [Releases](../../releases) — install with
+VitaShell or any other installer, requires HENkaku/Ensō.
 
-Lizenz: GPL-3.0-only (siehe [`LICENSE`](LICENSE)). Eine vollständige Liste
-aller mitgelieferten Fremdkomponenten und deren Lizenzen steht in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Dieses Repository enthält
-den vollständigen Corresponding Source zum veröffentlichten VPK (GPL-3.0 §6).
+License: GPL-3.0-only (see [`LICENSE`](LICENSE)). A full list of bundled
+third-party components and their licenses is in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). This repository contains
+the complete Corresponding Source for the published VPK (GPL-3.0 §6).
 
-## Überblick
+## Overview
 
-ViTube läuft als eine einzige Shell mit vier Tabs — **Start**, **Suche**,
-**Abos**, **Mehr** — unter einer gemeinsamen Kopf-, Tab- und Hinweisleiste,
-plus einem Vollbild-Player, der aus jeder Videozeile heraus geöffnet wird
-(`src/ui/list_screen.c` ist der zentrale Router). Für Videolisten, Suche,
-Kanäle und Abos ruft die App YouTubes offizielle mobile/TV-Clients so auf,
-wie es die echten Apps intern tun; für die Wiedergabe wird 720p wo möglich
-direkt über YouTubes eigenes HLS aufgelöst, ohne Account und ohne
-Umweg über einen eigenen Server.
+ViTube runs as a single shell with four tabs — **Home**, **Search**,
+**Subscriptions**, **More** — under a shared header/tab/toast bar, plus a
+full-screen player opened from any video row (`src/ui/list_screen.c` is the
+central router). For video lists, search, channels, and subscriptions the
+app calls YouTube's official mobile/TV clients the same way the real apps do
+internally; for playback, 720p is resolved directly through YouTube's own
+HLS wherever possible, without an account and without routing through a
+custom server.
 
-## Funktionen
+## Features
 
-- **Start-Feed, Suche, Kanal-Uploads, Abo-Feed** — alles über YouTubes
-  internes innertube-API (`src/yt/innertube.c`), nicht über die öffentliche
-  YouTube-Data-API.
-- **Login per Google-Gerätecode-Flow** (`src/yt/oauth.c`): Anzeige eines
-  Codes plus einer URL, die auf einem zweiten Gerät bestätigt wird; es wird
-  dauerhaft nur der Refresh-Token unter `ux0:data/ViTube/oauth.json`
-  gespeichert.
-- **Verlauf, letzte Suchanfragen, Kanal-Sortierung** — lokal persistiert in
-  einer einzigen `state.json` (`src/store.c`), ohne Cloud-Sync.
-- **Live-Streams und On-Demand-720p über HLS**, mit Hardware-Videodecoding
-  und automatischem Fallback auf ein progressives Format, falls HLS für ein
-  Video scheitert (`src/media/hls.c`, `src/ui/player_quality_switch.c`).
-- **Zweisprachige Oberfläche** (Deutsch/Englisch, `src/ui/strings.c`) sowie
-  eine Auswahl an Inhalts-Regionen/-Sprachen (DE/AT/CH, US, UK, FR, ES, IT;
-  `src/yt/region.c`), die Titel, Datumsangaben und Suchergebnisse
-  beeinflusst.
-- **Touch- und Tasten-Bedienung** im Player (Scrubben, Lautstärke,
-  Qualitätswahl) über `src/ui/player_touch.c` / `player_hud.c`.
+- **Home feed, search, channel uploads, subscription feed** — all via
+  YouTube's internal innertube API (`src/yt/innertube.c`), not the public
+  YouTube Data API.
+- **Login via Google's device-code flow** (`src/yt/oauth.c`): shows a code
+  plus a URL confirmed on a second device; only the refresh token is
+  persisted, under `ux0:data/ViTube/oauth.json`.
+- **History, recent searches, channel sort order** — persisted locally in a
+  single `state.json` (`src/store.c`), no cloud sync.
+- **Live streams and on-demand 720p via HLS**, with hardware video decoding
+  and automatic fallback to a progressive format if HLS fails for a given
+  video (`src/media/hls.c`, `src/ui/player_quality_switch.c`).
+- **Bilingual UI** (German/English, `src/ui/strings.c`) plus a choice of
+  content regions/languages (DE/AT/CH, US, UK, FR, ES, IT;
+  `src/yt/region.c`), which affects titles, dates, and search results.
+- **Touch and button controls** in the player (scrubbing, volume, quality
+  selection) via `src/ui/player_touch.c` / `player_hud.c`.
 
-## Architektur
+## Architecture
 
-### Projektstruktur
+### Project structure
 
-| Pfad | Inhalt |
+| Path | Contents |
 |---|---|
-| `src/main.c`, `src/app.h` | Programmstart, globale Konstanten (Datenpfade, Bildschirmgröße, Farbpalette) |
-| `src/store.c` / `.h` | Persistenter lokaler Zustand: Verlauf, letzte Suchen, Kanal-Sortierung |
-| `src/log.c` / `.h` | Anhängendes Logfile, außerdem der einzige globale I/O-Lock, der **jeden** `ux0:`-Dateizugriff der App serialisiert |
-| `src/ui/` | Alle Bildschirme/Widgets: Listen, Player, Einstellungen, Login, Log-Ansicht, Text-Eingabe, Thumbnail-Cache, gemeinsames Zeichen-Toolkit (`ui.c`) |
-| `src/yt/` | YouTube-Client: innertube-Requests, OAuth, JSON-Parsing, Regions-/Sprachwahl |
-| `src/media/` | Wiedergabe-Quellen: HLS-Demuxing, progressives HTTPS-Streaming, Fassade über den Hardware-Decoder |
-| `src/net/` | Dünner HTTP(S)-Wrapper über `vita-https` |
-| `external/` | Vendorte Abhängigkeiten (siehe unten) |
-| `sce_modules/`, `sce_sys/` | Inhalte der VPK-Verpackung: System-Plugin `reAvPlayer.suprx`, App-Icon |
-| `assets/` | Schriftarten (DejaVu Sans, Noto Emoji) samt Lizenztexten |
-| `tests/` | Host-seitige Unit-Tests (siehe [Tests](#tests)) |
+| `src/main.c`, `src/app.h` | Program entry point, global constants (data paths, screen size, color palette) |
+| `src/store.c` / `.h` | Persistent local state: history, recent searches, channel sort order |
+| `src/log.c` / `.h` | Append-only log file, also the app's single global I/O lock that serializes **every** `ux0:` file access |
+| `src/ui/` | All screens/widgets: lists, player, settings, login, log viewer, text input, thumbnail cache, shared drawing toolkit (`ui.c`) |
+| `src/yt/` | YouTube client: innertube requests, OAuth, JSON parsing, region/language selection |
+| `src/media/` | Playback sources: HLS demuxing, progressive HTTPS streaming, facade over the hardware decoder |
+| `src/net/` | Thin HTTP(S) wrapper over `vita-https` |
+| `external/` | Vendored dependencies (see below) |
+| `sce_modules/`, `sce_sys/` | Contents of the VPK package: the `reAvPlayer.suprx` system plugin, app icon |
+| `assets/` | Fonts (DejaVu Sans, Noto Emoji) with their license texts |
+| `tests/` | Host-side unit tests (see [Tests](#tests)) |
 
-### App-Kern & UI
+### App core & UI
 
-`src/main.c` initialisiert Logging, Ein-/Ausgabe, Region/Sprache, lokalen
-Zustand und Netzwerk und übergibt dann dauerhaft an
-`list_screen_run()` — es gibt keine weitere Ereignisschleife auf höherer
-Ebene. `state.json` wird synchron bei jeder Änderung geschrieben (Verlauf
-maximal 30 Einträge mit Move-to-Front bei erneutem Ansehen, Suchen maximal
-10); Bildschirme erkennen Änderungen billig über einen Revisions-Zähler statt
-über Inhaltsvergleich. Sämtlicher `ux0:`-Dateizugriff — Logging, Store,
-Thumbnail-Cache, HLS-Prefetch — läuft durch denselben Lock in `log.c`,
-nachdem ein realer Hardware-Crash (2026-08-27) auf nebenläufigen,
-unserialisierten `SceIo`-Zugriff zurückgeführt wurde.
+`src/main.c` initializes logging, I/O, region/language, local state, and
+networking, then hands off permanently to `list_screen_run()` — there is no
+further higher-level event loop. `state.json` is written synchronously on
+every change (history capped at 30 entries with move-to-front on rewatch,
+searches capped at 10); screens detect changes cheaply via a revision
+counter rather than content comparison. All `ux0:` file access — logging,
+store, thumbnail cache, HLS prefetch — goes through the same lock in
+`log.c`, after a real hardware crash (2026-08-27) was traced back to
+concurrent, unserialized `SceIo` access.
 
-### YouTube-Anbindung (`src/yt/`)
+### YouTube integration (`src/yt/`)
 
-ViTube spricht YouTubes nicht-öffentliches innertube-API — dasselbe JSON-API,
-das youtube.com und die offiziellen Apps intern verwenden. Da es kein
-öffentliches API ist, gibt sich die App wechselnd als drei verschiedene
-YouTube-Clients aus, weil einzelne Endpunkte je nach Anmeldestatus
-unterschiedlich reagieren:
+ViTube speaks YouTube's non-public innertube API — the same JSON API that
+youtube.com and the official apps use internally. Since it isn't a public
+API, the app impersonates three different YouTube clients depending on the
+endpoint, because individual endpoints behave differently depending on
+sign-in state:
 
-- **ANDROID** — Standard für Suche, "Nächstes Video"/Vorschläge und
-  Stream-Auflösung.
-- **TVHTML5** ("YouTube on TV") — für alles, was den OAuth-Token benutzt
-  (Start-Feed mit Login, Abos, Subscribe/Unsubscribe), da der Token genau auf
-  diesen Client-Typ ausgestellt ist.
-- **VISIONOS** — der einzige Client, der (a) einen echten anonymen Start-Feed
-  liefert und (b) ein bereits signiertes HLS-Manifest zurückgibt, ohne dass
-  ViTube YouTubes JavaScript-`n`-Parameter-Cipher lösen müsste — das ist der
-  Weg, über den 720p ohne Account funktioniert.
+- **ANDROID** — the default for search, "up next"/suggestions, and stream
+  resolution.
+- **TVHTML5** ("YouTube on TV") — for everything that uses the OAuth token
+  (home feed while logged in, subscriptions, subscribe/unsubscribe), since
+  the token is issued specifically for this client type.
+- **VISIONOS** — the only client that (a) returns a real anonymous home feed
+  and (b) returns an already-signed HLS manifest without ViTube having to
+  solve YouTube's JavaScript `n`-parameter cipher — this is how 720p works
+  without an account.
 
-Antworten werden von einer einzigen rekursiven `walk()`-Funktion in
-`src/yt/parse.c` geparst, die alle bekannten Renderer-Formen (`videoRenderer`,
-`tileRenderer`, `videoWithContextData`, `compactChannelData`, …) über alle
-drei Client-Typen hinweg erkennt und in feste, heap-freie Structs
-(`src/yt/model.h`) füllt. Login läuft über Googles OAuth2-Gerätecode-Flow
-(`src/yt/oauth.c`); persistiert wird ausschließlich der Refresh-Token unter
-`VITUBE_OAUTH_PATH`. Die dafür verwendete Client-ID/Secret-Kombination in
-`oauth.c` ist keine eigene Anwendung, sondern die öffentlich bekannte
-Identität von Googles eigenem "YouTube on TV"-Gerätetyp (dieselbe, die u. a.
-in yt-dlp und Kodis YouTube-Addon verwendet wird) — nötig, weil innertube
-bestimmte Endpunkte nur für offizielle Client-Typen freischaltet.
+Responses are parsed by a single recursive `walk()` function in
+`src/yt/parse.c` that recognizes all known renderer shapes (`videoRenderer`,
+`tileRenderer`, `videoWithContextData`, `compactChannelData`, …) across all
+three client types and fills fixed, heap-free structs (`src/yt/model.h`).
+Login uses Google's OAuth2 device-code flow (`src/yt/oauth.c`); only the
+refresh token is persisted, under `VITUBE_OAUTH_PATH`. The client ID/secret
+pair used there isn't ViTube's own application — it's the publicly known
+identity of Google's own "YouTube on TV" device type (the same one used in,
+among others, yt-dlp and Kodi's YouTube add-on) — needed because innertube
+only unlocks certain endpoints for official client types.
 
-### Medienwiedergabe (`src/media/`)
+### Media playback (`src/media/`)
 
-Zwei unabhängige Achsen bestimmen, wie ein Video abgespielt wird:
+Two independent axes determine how a video is played:
 
-1. **Quelltyp** — eine einzelne, per Byte-Range lesbare Datei
-   (`src/media/remote_stream.c`, für progressive Formate) oder eine
-   HLS-Playlist (`src/media/hls.c`, für Live-Streams und On-Demand-720p).
-2. **Decoder-Engine** — Hardware-H.264-Decoding über `h264_vita`/SceVideodec
-   (vendort in `external/vita-hw-decoder`), vermittelt durch
-   `src/media/vita_decoder.c`. Einen CPU-Software-Decoder gibt es nicht
-   mehr: er war nur für Direktformate erreichbar, hat auf keinem Gerät je
-   ein Bild geliefert und kostete jeden Engine-Fix doppelt (Git-Historie
-   von `external/vita-sw-decoder`). Stirbt eine Hardware-Session, öffnet
-   der Player sie einmal an derselben Position neu; bei HLS weicht die
-   Wiedergabe danach auf ein direktes progressives Format aus.
+1. **Source type** — a single, byte-range-readable file
+   (`src/media/remote_stream.c`, for progressive formats) or an HLS
+   playlist (`src/media/hls.c`, for live streams and on-demand 720p).
+2. **Decoder engine** — hardware H.264 decoding via `h264_vita`/SceVideodec
+   (vendored in `external/vita-hw-decoder`), mediated through
+   `src/media/vita_decoder.c`. There is no longer a CPU software decoder: it
+   was only reachable for direct formats, never produced a picture on any
+   device, and doubled the cost of every engine fix (see the git history of
+   `external/vita-sw-decoder`). If a hardware session dies, the player
+   reopens it once at the same position; for HLS, playback then falls back
+   to a direct progressive format.
 
-HLS deckt zwei YouTube-Manifestformen ab, die `hls.c` allein am Vorhandensein
-von `#EXT-X-ENDLIST` unterscheidet: On-Demand-720p (demuxt in getrennte
-Video-/Audio-Playlists, je einmal geladen) und Live (eine gemuxte
-MPEG-TS-Playlist mit rollierendem Fenster, einmal geladen und für beide
-Decoder-Cursor gemeinsam genutzt). Ein eigenes Worker-Thread-Engine in
-`hls.c` lädt kommende Segmente vorab in einen bytebegrenzten Ring, damit der
-FFmpeg-Demux-/Audiotakt-Thread nie auf das Netzwerk wartet.
+HLS covers two YouTube manifest shapes, which `hls.c` distinguishes purely
+by the presence of `#EXT-X-ENDLIST`: on-demand 720p (demuxed into separate
+video/audio playlists, each loaded once) and live (a muxed MPEG-TS playlist
+with a rolling window, loaded once and shared by both decoder cursors). A
+dedicated worker-thread engine in `hls.c` prefetches upcoming segments into
+a byte-bounded ring so the FFmpeg demux/audio-clock thread never blocks on
+the network.
 
-`src/ui/player_quality_switch.c` implementiert den Wechsel zwischen HD (HLS)
-und Direktqualität als dreistufigen asynchronen Vorgang (Auflösen →
-Vorbereiten → Übernehmen), weil auf der Vita immer nur eine
-Hardware-AAC-Decoder-Instanz gleichzeitig existieren kann.
+`src/ui/player_quality_switch.c` implements switching between HD (HLS) and
+direct quality as a three-stage async operation (resolve → prepare →
+commit), because the Vita can only ever have one hardware AAC decoder
+instance alive at a time.
 
-720p lief davor über einen selbst gehosteten, mittlerweile aus dem Repository
-entfernten `yt-dlp`-Server: die dafür nötige Cookie-Session lief immer wieder
-ab und machte den Ansatz im Betrieb unzuverlässig, weshalb er zugunsten der
-direkten HLS-Auflösung aufgegeben wurde.
+720p used to run through a self-hosted `yt-dlp` server, since removed from
+the repository: the cookie session it needed kept expiring and made the
+approach unreliable in practice, so it was dropped in favor of direct HLS
+resolution.
 
-### Netzwerk (`src/net/`)
+### Networking (`src/net/`)
 
-`src/net/http.c` ist ein dünner Wrapper über das vendorte Paket
-`external/vita-https`, das seinerseits einen eigens gebauten
-curl+Mbed-TLS-Stack für die Vita bereitstellt (nicht die
-System-VitaSDK-curl/OpenSSL-Kombination, deren OpenSSL-1.0.2-Port
-End-of-Life und GPLv3-inkompatibel ist). `vita-https` erzwingt TLS 1.2 als
-Minimum, verifiziert Peer und Hostname standardmäßig gegen ein mitgeliefertes
-Mozilla-CA-Bundle, erlaubt nur `https://`-URLs und verlangt für private/
-selbstsignierte Gegenstellen ein explizites `sha256//`-SPKI-Pinning.
+`src/net/http.c` is a thin wrapper over the vendored package
+`external/vita-https`, which in turn provides a purpose-built curl+Mbed TLS
+stack for the Vita (not the system VitaSDK curl/OpenSSL combo, whose
+OpenSSL 1.0.2 port is end-of-life and GPLv3-incompatible). `vita-https`
+enforces TLS 1.2 as a minimum, verifies peer and hostname by default against
+a bundled Mozilla CA bundle, allows only `https://` URLs, and requires
+explicit `sha256//` SPKI pinning for private/self-signed endpoints.
 
 ## Build
 
-### Voraussetzungen
+### Prerequisites
 
-- Ein installiertes [VitaSDK](https://vitasdk.org) mit gesetzter
-  `VITASDK`-Umgebungsvariable.
+- An installed [VitaSDK](https://vitasdk.org) with the `VITASDK`
+  environment variable set.
 - CMake ≥ 3.16.
-- Die drei folgenden Artefakte müssen existieren, bevor sich das
-  Top-Level-`CMakeLists.txt` überhaupt konfigurieren lässt (es bricht sonst
-  mit `FATAL_ERROR` ab): eine gebaute FFmpeg-Bibliothek unter
-  `external/vita-hw-decoder/build/deps/ffmpeg-vita-hw/lib/libavcodec.a`,
-  eine gebaute curl-Bibliothek unter
-  `external/vita-https/build/deps/curl-mbedtls/lib/libcurl.a`, sowie
-  `sce_modules/reAvPlayer.suprx` (liegt bereits im Repository).
+- The following three artifacts must exist before the top-level
+  `CMakeLists.txt` can even configure (it aborts with `FATAL_ERROR`
+  otherwise): a built FFmpeg library at
+  `external/vita-hw-decoder/build/deps/ffmpeg-vita-hw/lib/libavcodec.a`, a
+  built curl library at
+  `external/vita-https/build/deps/curl-mbedtls/lib/libcurl.a`, and
+  `sce_modules/reAvPlayer.suprx` (already included in the repository).
 
-### 1. Vendorte Abhängigkeiten bauen
+### 1. Build vendored dependencies
 
-Beide Build-Skripte müssen einmalig mit gesetzter `VITASDK`-Variable
-laufen.
+Both build scripts need to be run once with `VITASDK` set.
 
 ```sh
-export VITASDK=/pfad/zu/vitasdk
+export VITASDK=/path/to/vitasdk
 
 cd external/vita-hw-decoder && ./tools/build-ffmpeg.sh && cd -
 cd external/vita-https      && ./tools/build-curl-mbedtls.sh && cd -
 ```
 
-### 2. ViTube bauen
+### 2. Build ViTube
 
 ```sh
 mkdir -p build && cd build
@@ -194,53 +187,51 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
-Das Ergebnis ist `build/ViTube.vpk` — die Verpackung
-(`vita_create_vpk` in `CMakeLists.txt`) bündelt Icon, das Plugin
-`reAvPlayer.suprx`, alle relevanten Lizenztexte (GPLv3 §4/§6-konform: eigene
-GPL, `THIRD_PARTY_NOTICES.md`, FFmpeg-LGPL, wiliwilis GPL-Patch,
-CA-Bundle-MPL, Font-Lizenzen) sowie die beiden Schriftarten aus `assets/`.
+The result is `build/ViTube.vpk` — the packaging step (`vita_create_vpk` in
+`CMakeLists.txt`) bundles the icon, the `reAvPlayer.suprx` plugin, all
+relevant license texts (GPLv3 §4/§6-compliant: ViTube's own GPL,
+`THIRD_PARTY_NOTICES.md`, FFmpeg's LGPL, wiliwili's GPL patch, the CA
+bundle's MPL, font licenses), and the two fonts from `assets/`.
 
-### Installation auf der Vita
+### Installing on the Vita
 
-Die entstandene `ViTube.vpk` per VitaShell oder einem beliebigen anderen
-Installer auf die Vita übertragen und installieren. Beim ersten Start legt
-die App `ux0:data/ViTube/` an (Login-Refresh-Token, Verlauf/Einstellungen,
-Region/Sprache, HD-Präferenz) — dieser Ordner lässt sich löschen, um die App
-in den Auslieferungszustand zurückzusetzen.
+Transfer the resulting `ViTube.vpk` to the Vita via VitaShell or any other
+installer and install it. On first launch the app creates
+`ux0:data/ViTube/` (login refresh token, history/settings, region/language,
+HD preference) — delete that folder any time to reset the app to its
+out-of-the-box state.
 
 ## Tests
 
-`tests/` enthält vier host-seitige Unit-Tests, die **nicht** auf der Vita
-laufen: `tests/stubs/` stellt Ersatz-Header für `vita-https` und einen Teil
-der VitaSDK-Kernel-Header bereit, damit sich Logik wie das HLS-Playlist-/
-Segment-Handling auf der Build-Maschine ausführen lässt.
+`tests/` contains four host-side unit tests that **do not** run on the
+Vita: `tests/stubs/` provides stand-in headers for `vita-https` and part of
+the VitaSDK kernel headers so logic like HLS playlist/segment handling can
+run on the build machine.
 
-- `test_hls.c` — HLS-Playlist-, Segment- und Cursor-Logik gegen einen
-  simulierten HTTP-Server.
-- `test_parse.c` — der innertube-JSON-Parser gegen echte, mitgeschnittene
-  API-Antworten in `tests/fixtures/`; muss mit `tests/` als Arbeitsverzeichnis
-  ausgeführt werden, da die Fixtures relativ referenziert werden.
-- `test_player_touch.c`, `test_strings.c` — Touch-Gesten-Mathematik bzw.
-  Format-String-Parität zwischen der deutschen und englischen
-  Textstelle-Tabelle.
+- `test_hls.c` — HLS playlist, segment, and cursor logic against a
+  simulated HTTP server.
+- `test_parse.c` — the innertube JSON parser against real, captured API
+  responses in `tests/fixtures/`; must be run with `tests/` as the working
+  directory, since fixtures are referenced relatively.
+- `test_player_touch.c`, `test_strings.c` — touch-gesture math and format-
+  string parity between the German and English string tables, respectively.
 
-Es gibt **kein** CMake/CTest-Ziel und kein Build-Skript unter `tests/`. Nur
-für `test_player_touch.c` und `test_strings.c` ist der Build-Befehl direkt im
-Datei-Kopfkommentar dokumentiert (ein einfacher `gcc`-Einzeiler, der die
-jeweilige `src/`-Datei mitlinkt). Für `test_hls.c` und `test_parse.c` ist kein
-Build-Befehl im Repository hinterlegt.
+There is **no** CMake/CTest target and no build script under `tests/`. Only
+for `test_player_touch.c` and `test_strings.c` is the build command
+documented directly in the file's header comment (a simple one-line `gcc`
+invocation that links in the corresponding `src/` file). For `test_hls.c`
+and `test_parse.c` there is no build command recorded in the repository.
 
-## Lizenz & Third-Party-Notices
+## License & third-party notices
 
-ViTube steht unter **GPL-3.0-only** ([`LICENSE`](LICENSE)). Eine Tabelle
-aller mitgelieferten bzw. gelinkten Fremdkomponenten mit Lizenz und
-Quellenangabe steht in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) —
-unter anderem der gepatchte FFmpeg-Build (LGPL-Basis, durch den
-`h264_vita`-Hardware-Decode-Patch von wiliwili zu GPL-3.0), ReAvPlayer (MIT),
-libcurl, Mbed TLS, jansson, sowie die mitgelieferten Schriftarten.
+ViTube is licensed under **GPL-3.0-only** ([`LICENSE`](LICENSE)). A table of
+all bundled/linked third-party components with license and source is in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — among them the patched
+FFmpeg build (LGPL base, brought to GPL-3.0 by wiliwili's `h264_vita`
+hardware-decode patch), ReAvPlayer (MIT), libcurl, Mbed TLS, jansson, and
+the bundled fonts.
 
-`src/media/vita_decoder.c` geht in seiner Abstammung auf das
-[VitaWave](https://github.com/spyro-98/VitaWave)-Projekt zurück. Der
-VitaWave-Source selbst ist nicht Teil dieses Repositories (er wird von
-ViTube nicht mitgebaut) — der vollständige Source steht bereits öffentlich
-im verlinkten Upstream-Repository.
+`src/media/vita_decoder.c` descends from the
+[VitaWave](https://github.com/spyro-98/VitaWave) project. VitaWave's own
+source is not part of this repository (ViTube does not build it) — the
+complete source is already public in the linked upstream repository.
