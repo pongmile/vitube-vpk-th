@@ -1,0 +1,129 @@
+--- a/libavcodec/vitadec_video.c
++++ b/libavcodec/vitadec_video.c
+@@ -152,6 +152,7 @@
+     int h264_width;
+     int h264_height;
+     int h264_ref_frames;
++    int h264_ref_frames_declared;
+ } VitaDecodeContextImpl;
+ 
+ typedef struct VitaDecodeContext {
+@@ -442,6 +443,27 @@
+         }
+     }
+     return sps;
++}
++
++// H.264 table A-1 MaxDpbMbs, indexed by level_idc.
++static int vita_h264_level_dpb_frames(int level_idc, int mbs)
++{
++    int max_dpb_mbs;
++    switch (level_idc) {
++    case 30: max_dpb_mbs = 8100;   break;
++    case 31: max_dpb_mbs = 18000;  break;
++    case 32: max_dpb_mbs = 20480;  break;
++    case 40:
++    case 41: max_dpb_mbs = 32768;  break;
++    case 42: max_dpb_mbs = 34816;  break;
++    case 50: max_dpb_mbs = 110400; break;
++    case 51:
++    case 52: max_dpb_mbs = 184320; break;
++    default: max_dpb_mbs = 8100;   break; // low/unknown levels: stay small
++    }
++    if (mbs <= 0)
++        return 1;
++    return FFMIN(FFMAX(max_dpb_mbs / mbs, 1), 16);
+ }
+ 
+ static bool do_update_dimension(AVCodecContext *avctx, H264ParamSets *ps)
+@@ -457,15 +479,29 @@
+     avctx->width = avctx->coded_width - (sps->crop_left + sps->crop_right);
+     avctx->height = avctx->coded_height - (sps->crop_top + sps->crop_bottom);
+ 
++    // Real-world streams lie about their reference needs: YouTube's 720p25
++    // HLS encodes declare max_num_ref_frames=3 (and a VUI
++    // max_num_reorder_frames of 1) while actually running a 5-frame
++    // B-pyramid.  A decoder sized for the declared count fails
++    // deterministically in sceAvcdecDecode once the reorder backlog
++    // exceeds the DPB it asked for.  Size the DPB for the LEVEL's maximum
++    // (plus the picture being decoded) instead, capped so the frame-memory
++    // query stays well inside what the Vita grants; the declared count is
++    // kept as a fallback should the query reject the larger pool.
++    int mbs = (int)(sps->mb_width * sps->mb_height);
++    int ref_frames = FFMAX((int)sps->ref_frame_count,
++                           FFMIN(vita_h264_level_dpb_frames(sps->level_idc, mbs) + 1, 6));
++
+     if (ctx->h264_width == avctx->width 
+         && ctx->h264_height == avctx->height
+-        && ctx->h264_ref_frames == sps->ref_frame_count
++        && ctx->h264_ref_frames == ref_frames
+         && ctx->frame_format == desc)
+         return false;
+ 
+     ctx->h264_width = avctx->width;
+     ctx->h264_height = avctx->height;
+-    ctx->h264_ref_frames = sps->ref_frame_count;
++    ctx->h264_ref_frames = ref_frames;
++    ctx->h264_ref_frames_declared = sps->ref_frame_count;
+ 
+     // https://github.com/MakiseKurisu/vita-sceVideodecInitLibrary-test
+     ctx->frame_width = FFMAX(FFALIGN(avctx->width, 16), 64);
+@@ -695,23 +731,44 @@
+     init.hwAvc.size = sizeof(SceVideodecQueryInitInfoHwAvcdec);
+     init.hwAvc.horizontal = ctx->frame_width;
+     init.hwAvc.vertical = ctx->frame_height;
+-    init.hwAvc.numOfRefFrames = ctx->h264_ref_frames;
+     init.hwAvc.numOfStreams = 1;
+     sceVideodecSetConfigInternal(SCE_VIDEODEC_TYPE_HW_AVCDEC, 2);
+     sceAvcdecSetDecodeMode(SCE_VIDEODEC_TYPE_HW_AVCDEC, 0x80);
+-    sceVideodecQueryMemSizeInternal(SCE_VIDEODEC_TYPE_HW_AVCDEC, &init, &codec_buf_size);
+-    if (codec_buf_size <= 0) {
+-        av_log(avctx, AV_LOG_ERROR, "vita_h264 init: query codec buffer size failed\n");
+-        goto fail;
+-    }
+-
+-    qdi.horizontal = init.hwAvc.horizontal;
+-    qdi.vertical = init.hwAvc.vertical;
+-    qdi.numOfRefFrames = init.hwAvc.numOfRefFrames;
+-    ret = sceAvcdecQueryDecoderMemSizeInternal(SCE_VIDEODEC_TYPE_HW_AVCDEC, &qdi, &di);
+-    if (ret != 0) {
+-        av_log(avctx, AV_LOG_ERROR, "vita_h264 init: query frame buffer size failed 0x%x\n", ret);
+-        goto fail;
++    // ref_frames stays local on purpose: do_update_dimension compares
++    // ctx->h264_ref_frames against the level-derived target to decide
++    // whether a re-init is needed, so writing a reduced fallback value back
++    // into the context would make every subsequent packet look like a
++    // dimension change and re-init the decoder in a loop.
++    {
++        int ref_frames = ctx->h264_ref_frames;
++        for (;;) {
++            init.hwAvc.numOfRefFrames = ref_frames;
++            codec_buf_size = 0;
++            sceVideodecQueryMemSizeInternal(SCE_VIDEODEC_TYPE_HW_AVCDEC, &init, &codec_buf_size);
++            ret = 0;
++            if (codec_buf_size > 0) {
++                qdi.horizontal = init.hwAvc.horizontal;
++                qdi.vertical = init.hwAvc.vertical;
++                qdi.numOfRefFrames = init.hwAvc.numOfRefFrames;
++                ret = sceAvcdecQueryDecoderMemSizeInternal(SCE_VIDEODEC_TYPE_HW_AVCDEC, &qdi, &di);
++                if (ret == 0)
++                    break;
++            }
++            // The level-derived pool was rejected; the declared count is
++            // what this hardware demonstrably accepted before the
++            // enlargement.
++            if (ctx->h264_ref_frames_declared > 0 &&
++                ref_frames > ctx->h264_ref_frames_declared) {
++                av_log(avctx, AV_LOG_WARNING,
++                    "vita_h264 init: %d-frame DPB rejected (size=%d ret=0x%x), retrying with declared %d\n",
++                    ref_frames, codec_buf_size, ret, ctx->h264_ref_frames_declared);
++                ref_frames = ctx->h264_ref_frames_declared;
++                continue;
++            }
++            av_log(avctx, AV_LOG_ERROR, "vita_h264 init: query decoder memory failed (size=%d ret=0x%x)\n",
++                codec_buf_size, ret);
++            goto fail;
++        }
+     }
+ 
+     if (ctx->option_dr) {

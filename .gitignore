@@ -1,0 +1,11 @@
+# CMake build output (this repo, and every vendored package's own build dir)
+build/
+
+# macOS
+.DS_Store
+
+# Diagnostics pulled off the device (ux0:data/ViTube/log.txt). Useful to look
+# at, never part of a build — one run's copy was tracked by accident.
+log.txt
+log.prev.txt
+log-live.txt
