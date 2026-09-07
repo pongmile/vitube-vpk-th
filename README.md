@@ -2,15 +2,12 @@
 
 A native YouTube client for the PlayStation Vita, written in C against
 VitaSDK/vita2d. ViTube talks directly to YouTube's internal ("innertube")
-JSON API, plays videos through the Vita's hardware decoders, and needs no
-companion server, no account, and no browser.
+JSON API, plays videos through the Vita's hardware decoders.
 
 ## Status
 
-This app was built largely through "vibe coding" (AI-assisted, iterative
-development) rather than a from-scratch handwritten codebase. It works, but
-is early/experimental — **use at your own risk, no guarantees.** More
-thorough documentation will follow when time allows.
+This app was built largely through vibe coding. It works, but
+is early/experimental — **use at your own risk, no guarantees.**
 
 **Download (prebuilt VPK):** see [Releases](../../releases) — install with
 VitaShell or any other installer, requires HENkaku/Ensō.
