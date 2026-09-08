@@ -2,7 +2,7 @@
 #ifndef VITUBE_APP_H
 #define VITUBE_APP_H
 
-#define VITUBE_VERSION "1.1"
+#define VITUBE_VERSION "1.2"
 #define VITUBE_DATA_DIR "ux0:data/ViTube"
 #define VITUBE_OAUTH_PATH VITUBE_DATA_DIR "/oauth.json"
 #define VITUBE_HD_PREF_PATH VITUBE_DATA_DIR "/hd.flag"

@@ -164,6 +164,11 @@ static int age_minutes(const char *s) {
         { "secondi", 0 },      { "minuti", 1 },      { "or",   60 },
         { "giorn",   1440 },   { "settiman", 10080 }, { "ann",  525600 },
         { "an",      525600 },
+        /* pt (Brazil): há 3 segundos / minutos / horas / dias / semanas /
+         * 1 mês / 5 meses / anos. segundo, minuto, hora, semana and mes are
+         * the Spanish stems above; "an" covers ano/anos. Only the two words
+         * Spanish spells differently are new. */
+        { "dia",     1440 },   { "m\xc3\xaas", 43200 },
     };
     if (!s) return -1;
     for (const char *p = s; *p; p++) {

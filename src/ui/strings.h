@@ -1,14 +1,17 @@
-/* ViTube — user-facing text in German and English.
+/* ViTube — user-facing text in German, English, Spanish, Portuguese, Italian
+ * and French.
  *
  * Every string the app puts on screen goes through vt_str(). Log lines do
  * NOT: they are developer-facing and stay as they are. Neither do the unit
  * words in parse.c's age_minutes() — those read YouTube's own output and have
  * to follow the region's hl, not the interface language.
  *
- * The catalogue is one table of {de, en} pairs indexed by the enum below, so
- * a translation cannot drift out of alignment with its key the way two
- * parallel arrays can. tests/test_strings.c checks that both halves exist and
- * that their printf conversions match. */
+ * The catalogue is one table per language (strings_de.c ... strings_fr.c),
+ * each indexed by the enum below through designated initialisers, so a
+ * translation cannot drift out of alignment with its key the way positional
+ * arrays can. German is the original. tests/test_strings.c checks that every
+ * language has every entry and that printf conversions, button glyphs and key
+ * names match the German. */
 #ifndef VITUBE_UI_STRINGS_H
 #define VITUBE_UI_STRINGS_H
 
@@ -16,6 +19,11 @@ typedef enum {
     VT_LANG_AUTO = 0, /* follow the region's hl */
     VT_LANG_DE,
     VT_LANG_EN,
+    /* Append only: lang.txt stores the choice as its index, one digit. */
+    VT_LANG_ES,
+    VT_LANG_PT, /* Brazilian Portuguese — the variant YouTube's "pt" is */
+    VT_LANG_IT,
+    VT_LANG_FR,
     VT_LANG_CHOICE_COUNT
 } VtLangChoice;
 
@@ -25,9 +33,10 @@ void vt_lang_load(void);
 VtLangChoice vt_lang_choice(void);
 void vt_lang_set_choice(VtLangChoice choice);
 const char *vt_lang_label(VtLangChoice choice);
-/* What the app is actually speaking right now — "Deutsch" or "English".
- * Shown beside the Automatic entry so that choice is not a promise the user
- * has to go and verify somewhere else. */
+/* What the app is actually speaking right now, as that language's own name
+ * ("Deutsch", "English", "Español", ...). Shown beside the Automatic entry
+ * so that choice is not a promise the user has to go and verify somewhere
+ * else. */
 const char *vt_lang_effective_label(void);
 
 typedef enum {
@@ -139,12 +148,17 @@ typedef enum {
     S_QUALITY_THIS_VIDEO_ONLY,
     S_HINT_PLAYER_PAUSED,
     S_HINT_PLAYER_PLAYING,
+    /* For videos whose Triangle menu stays closed (Shorts, live): the legend
+     * must not advertise a key that does nothing. */
     S_HINT_PLAYER_PAUSED_PLAIN,
     S_HINT_PLAYER_PLAYING_PLAIN,
     S_PREPARING_HD,
     S_NO_HD_STREAM,
     S_YOUTUBE_UNREACHABLE,
     S_BUFFERING,
+    /* Untranslated in every language on purpose: YouTube's own badge reads
+     * LIVE everywhere, and the player HUD should say the same word the list
+     * did. */
     S_LIVE,
 
     /* --- the Mehr tab -------------------------------------------------- */
@@ -198,8 +212,11 @@ typedef enum {
 
 const char *vt_str(VtStringId id);
 
-/* Both halves of one entry, for the parity test. Returns NULL out of range. */
-const char *vt_str_de(VtStringId id);
-const char *vt_str_en(VtStringId id);
+/* One language's text for an entry, with neither the AUTO resolution nor the
+ * fallback: NULL when `lang` is AUTO or out of range, or when that language
+ * has no text for the entry. This is what strings.c and the parity test read. */
+const char *vt_str_in(VtLangChoice lang, VtStringId id);
+/* "de", "en", "es", ... for log lines and the test's report; "auto" for AUTO. */
+const char *vt_lang_code(VtLangChoice lang);
 
 #endif

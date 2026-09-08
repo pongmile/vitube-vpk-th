@@ -41,9 +41,12 @@ custom server.
 - **Live streams and on-demand 720p via HLS**, with hardware video decoding
   and automatic fallback to a progressive format if HLS fails for a given
   video (`src/media/hls.c`, `src/ui/player_quality_switch.c`).
-- **Bilingual UI** (German/English, `src/ui/strings.c`) plus a choice of
-  content regions/languages (DE/AT/CH, US, UK, FR, ES, IT;
-  `src/yt/region.c`), which affects titles, dates, and search results.
+- **Six-language UI** — German, English, Spanish, Brazilian Portuguese,
+  Italian, French (`src/ui/strings.c`, one table per language in
+  `src/ui/strings_*.c`) — plus a choice of content regions/languages
+  (DE/AT/CH, US, UK, FR, ES, IT, BR; `src/yt/region.c`), which affects
+  titles, dates, and search results. On first launch the region follows the
+  console language, and the UI language follows the region.
 - **Touch and button controls** in the player (scrubbing, volume, quality
   selection) via `src/ui/player_touch.c` / `player_hud.c`.
 
@@ -210,8 +213,9 @@ run on the build machine.
 - `test_parse.c` — the innertube JSON parser against real, captured API
   responses in `tests/fixtures/`; must be run with `tests/` as the working
   directory, since fixtures are referenced relatively.
-- `test_player_touch.c`, `test_strings.c` — touch-gesture math and format-
-  string parity between the German and English string tables, respectively.
+- `test_player_touch.c`, `test_strings.c` — touch-gesture math and parity of
+  every language table against the German original (format strings, button
+  glyphs, key names, lengths), respectively.
 
 There is **no** CMake/CTest target and no build script under `tests/`. Only
 for `test_player_touch.c` and `test_strings.c` is the build command

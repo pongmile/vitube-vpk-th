@@ -115,7 +115,7 @@ void player_screen_run(const yt_video_t *video) {
         const char *reason = resolve.stream.reason[0] ? resolve.stream.reason
                            : resolve.stream.playability[0]
                            ? resolve.stream.playability
-                           : "Keine abspielbare Version gefunden";
+                           : vt_str(S_ERR_NO_STREAM_DATA);
         vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE), reason, 150);
         return;
     }
@@ -564,7 +564,7 @@ void player_screen_run(const yt_video_t *video) {
                     char detail[40], qlabel_tmp[24];
                     quality_label(0, &resolve.stream, quality, qlabel_tmp,
                                   sizeof qlabel_tmp);
-                    snprintf(detail, sizeof detail, "Weiter in %s",
+                    snprintf(detail, sizeof detail, vt_str(S_CONTINUE_IN),
                              qlabel_tmp);
                     vt_ui_toast(vt_str(S_HD_PLAYBACK_BROKEN), detail, 100);
                     hud_visible = 1;

@@ -1,5 +1,5 @@
 /* ViTube — which language the catalogue answers in, and where that choice is
- * stored. The catalogue itself is in strings_table.c. */
+ * stored. The catalogue itself is in strings_table.c and strings_<lang>.c. */
 #include "ui/strings.h"
 
 #include <psp2/io/fcntl.h>
@@ -13,33 +13,50 @@ static VtLangChoice g_choice = VT_LANG_AUTO;
 
 /* AUTO follows the region, because a build answering with English content and
  * German chrome is exactly the inconsistency the region setting introduced.
- * Anything that is not a German-speaking region falls back to English rather
- * than to its own language: those translations do not exist, and English is
- * the one every one of those regions can read. */
-static int use_english(void) {
-    if (g_choice == VT_LANG_DE) return 0;
-    if (g_choice == VT_LANG_EN) return 1;
+ * Every language the catalogue speaks is matched on the hl's language part
+ * ("pt" and "pt-PT" both read Portuguese); anything else falls back to
+ * English, the one language every remaining region can read. */
+static VtLangChoice effective(void) {
+    if (g_choice != VT_LANG_AUTO) return g_choice;
+    static const struct { char a, b; VtLangChoice lang; } by_hl[] = {
+        { 'd', 'e', VT_LANG_DE }, { 'e', 'n', VT_LANG_EN },
+        { 'e', 's', VT_LANG_ES }, { 'p', 't', VT_LANG_PT },
+        { 'i', 't', VT_LANG_IT }, { 'f', 'r', VT_LANG_FR },
+    };
     const char *hl = yt_region_hl();
-    return !(hl[0] == 'd' && hl[1] == 'e');
+    for (unsigned i = 0; i < sizeof by_hl / sizeof *by_hl; i++)
+        if (hl[0] == by_hl[i].a && hl[1] == by_hl[i].b) return by_hl[i].lang;
+    return VT_LANG_EN;
 }
 
 const char *vt_str(VtStringId id) {
-    const char *s = use_english() ? vt_str_en(id) : vt_str_de(id);
-    /* A missing translation falls back to the other language rather than to
-     * nothing: blank UI is a worse failure than untranslated UI, and
-     * tests/test_strings.c catches the gap long before a user does. */
-    if (!s) s = use_english() ? vt_str_de(id) : vt_str_en(id);
+    const char *s = vt_str_in(effective(), id);
+    /* A missing translation falls back to English, then to the German
+     * original, rather than to nothing: blank UI is a worse failure than
+     * untranslated UI, and tests/test_strings.c catches the gap long before a
+     * user does. */
+    if (!s) s = vt_str_in(VT_LANG_EN, id);
+    if (!s) s = vt_str_in(VT_LANG_DE, id);
     return s ? s : "";
 }
 
+/* Each language's own name, the one convention every user can find their
+ * language under — unlike the current UI language's word for it. */
 const char *vt_lang_label(VtLangChoice choice) {
-    if (choice == VT_LANG_DE) return "Deutsch";
-    if (choice == VT_LANG_EN) return "English";
-    return vt_str(S_LANG_AUTOMATIC);
+    switch (choice) {
+    case VT_LANG_DE: return "Deutsch";
+    case VT_LANG_EN: return "English";
+    case VT_LANG_ES: return "Espa\xc3\xb1ol";
+    case VT_LANG_PT: return "Portugu\xc3\xaas";
+    case VT_LANG_IT: return "Italiano";
+    case VT_LANG_FR: return "Fran\xc3\xa7\x61is"; /* \x61 = 'a': it would
+                                                     * otherwise extend \xa7 */
+    default:         return vt_str(S_LANG_AUTOMATIC);
+    }
 }
 
 const char *vt_lang_effective_label(void) {
-    return use_english() ? "English" : "Deutsch";
+    return vt_lang_label(effective());
 }
 
 VtLangChoice vt_lang_choice(void) { return g_choice; }
@@ -56,8 +73,8 @@ void vt_lang_load(void) {
     int v = c - '0';
     g_choice = (v > 0 && v < VT_LANG_CHOICE_COUNT) ? (VtLangChoice)v
                                                    : VT_LANG_AUTO;
-    vt_log("lang: choice=%d effective=%s", (int)g_choice,
-           use_english() ? "en" : "de");
+    vt_log("lang: choice=%s effective=%s", vt_lang_code(g_choice),
+           vt_lang_code(effective()));
 }
 
 void vt_lang_set_choice(VtLangChoice choice) {
@@ -75,6 +92,6 @@ void vt_lang_set_choice(VtLangChoice choice) {
         sceIoClose(fd);
     }
     vt_io_unlock();
-    vt_log("lang set: choice=%d effective=%s", (int)choice,
-           use_english() ? "en" : "de");
+    vt_log("lang set: choice=%s effective=%s", vt_lang_code(choice),
+           vt_lang_code(effective()));
 }

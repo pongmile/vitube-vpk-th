@@ -5,6 +5,7 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/system_param.h>
+#include <string.h>
 
 #include "app.h"
 #include "log.h"
@@ -22,6 +23,9 @@ static const yt_region_t g_regions[] = {
     { "France",            "fr", "FR" },
     { "Espa\xc3\xb1\x61",  "es", "ES" },
     { "Italia",            "it", "IT" },
+    /* Append only: region.txt stores the choice as its index, one digit.
+     * YouTube's bare "pt" is Brazilian Portuguese (Portugal is "pt-PT"). */
+    { "Brasil",            "pt", "BR" },
 };
 #define REGION_COUNT ((int)(sizeof g_regions / sizeof *g_regions))
 
@@ -34,15 +38,28 @@ const yt_region_t *yt_region_at(int index) {
     return &g_regions[index];
 }
 
-/* First run, no stored choice: follow the console. A German console starts
- * in Deutschland; everything else starts in USA/en, so the chrome, the
- * toasts and the content agree (use_english() derives the UI language from
- * hl). fr/es/it stay an explicit pick — age_minutes() cannot parse their
- * date words yet, and auto-selecting them would push a broken newest-first
- * sort onto users who never asked for it. Every failure falls through to
- * en/US: a locale probe must never be able to break a launch. */
+static int region_with_gl(const char *gl) {
+    for (int i = 0; i < REGION_COUNT; i++)
+        if (strcmp(g_regions[i].gl, gl) == 0) return i;
+    return 3; /* USA / en */
+}
+
+/* First run, no stored choice: follow the console. Every language the
+ * catalogue speaks (strings.c derives the UI language from hl, and
+ * age_minutes() in parse.c reads its date words) lands in its home region,
+ * so the chrome, the toasts and the content agree from the first launch.
+ * Everything else — including a Portugal console, which has no pt-PT region
+ * to land in — starts in USA/en. Every failure falls through to en/US: a
+ * locale probe must never be able to break a launch. */
 static int region_from_console(void) {
-    int fallback = 3; /* USA / en */
+    static const struct { int lang; const char *gl; } home[] = {
+        { SCE_SYSTEM_PARAM_LANG_GERMAN,        "DE" },
+        { SCE_SYSTEM_PARAM_LANG_FRENCH,        "FR" },
+        { SCE_SYSTEM_PARAM_LANG_SPANISH,       "ES" },
+        { SCE_SYSTEM_PARAM_LANG_ITALIAN,       "IT" },
+        { SCE_SYSTEM_PARAM_LANG_PORTUGUESE_BR, "BR" },
+    };
+    int fallback = region_with_gl("US");
     SceAppUtilInitParam init = {0};
     SceAppUtilBootParam boot = {0};
     int init_ret = sceAppUtilInit(&init, &boot);
@@ -55,7 +72,9 @@ static int region_from_console(void) {
         return fallback;
     }
     vt_log("region: console language %d", lang);
-    return lang == SCE_SYSTEM_PARAM_LANG_GERMAN ? 0 : fallback;
+    for (unsigned i = 0; i < sizeof home / sizeof *home; i++)
+        if (home[i].lang == lang) return region_with_gl(home[i].gl);
+    return fallback;
 }
 
 void yt_region_load(void) {
