@@ -12,6 +12,11 @@ is early/experimental — **use at your own risk, no guarantees.**
 **Download (prebuilt VPK):** see [Releases](../../releases) — install with
 VitaShell or any other installer, requires HENkaku/Ensō.
 
+**Version 2.0** removes a bundled system plugin whose hooks could crash
+other apps with hardware video decoding after ViTube was closed — see
+[Installing on the Vita](#installing-on-the-vita) for details and a note for
+anyone updating from an older version.
+
 License: GPL-3.0-only (see [`LICENSE`](LICENSE)). A full list of bundled
 third-party components and their licenses is in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). This repository contains
