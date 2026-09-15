@@ -64,7 +64,7 @@ custom server.
 | `src/media/` | Playback sources: HLS demuxing, progressive HTTPS streaming, facade over the hardware decoder |
 | `src/net/` | Thin HTTP(S) wrapper over `vita-https` |
 | `external/` | Vendored dependencies (see below) |
-| `sce_modules/`, `sce_sys/` | Contents of the VPK package: the `reAvPlayer.suprx` system plugin, app icon |
+| `sce_sys/` | Contents of the VPK package: app icon |
 | `assets/` | Fonts (DejaVu Sans, Noto Emoji) with their license texts |
 | `tests/` | Host-side unit tests (see [Tests](#tests)) |
 
@@ -121,9 +121,11 @@ Two independent axes determine how a video is played:
    `src/media/vita_decoder.c`. There is no longer a CPU software decoder: it
    was only reachable for direct formats, never produced a picture on any
    device, and doubled the cost of every engine fix (see the git history of
-   `external/vita-sw-decoder`). If a hardware session dies, the player
-   reopens it once at the same position; for HLS, playback then falls back
-   to a direct progressive format.
+   `external/vita-sw-decoder`). The decoder calls the SceVideodec Internal
+   API directly — it no longer depends on a bundled system-wide plugin (see
+   [Installing on the Vita](#installing-on-the-vita)). If a hardware session
+   dies, the player reopens it once at the same position; for HLS, playback
+   then falls back to a direct progressive format.
 
 HLS covers two YouTube manifest shapes, which `hls.c` distinguishes purely
 by the presence of `#EXT-X-ENDLIST`: on-demand 720p (demuxed into separate
@@ -160,13 +162,12 @@ explicit `sha256//` SPKI pinning for private/self-signed endpoints.
 - An installed [VitaSDK](https://vitasdk.org) with the `VITASDK`
   environment variable set.
 - CMake ≥ 3.16.
-- The following three artifacts must exist before the top-level
+- The following two artifacts must exist before the top-level
   `CMakeLists.txt` can even configure (it aborts with `FATAL_ERROR`
   otherwise): a built FFmpeg library at
-  `external/vita-hw-decoder/build/deps/ffmpeg-vita-hw/lib/libavcodec.a`, a
+  `external/vita-hw-decoder/build/deps/ffmpeg-vita-hw/lib/libavcodec.a` and a
   built curl library at
-  `external/vita-https/build/deps/curl-mbedtls/lib/libcurl.a`, and
-  `sce_modules/reAvPlayer.suprx` (already included in the repository).
+  `external/vita-https/build/deps/curl-mbedtls/lib/libcurl.a`.
 
 ### 1. Build vendored dependencies
 
@@ -188,10 +189,10 @@ make -j$(nproc)
 ```
 
 The result is `build/ViTube.vpk` — the packaging step (`vita_create_vpk` in
-`CMakeLists.txt`) bundles the icon, the `reAvPlayer.suprx` plugin, all
-relevant license texts (GPLv3 §4/§6-compliant: ViTube's own GPL,
-`THIRD_PARTY_NOTICES.md`, FFmpeg's LGPL, wiliwili's GPL patch, the CA
-bundle's MPL, font licenses), and the two fonts from `assets/`.
+`CMakeLists.txt`) bundles the icon, all relevant license texts (GPLv3
+§4/§6-compliant: ViTube's own GPL, `THIRD_PARTY_NOTICES.md`, FFmpeg's LGPL,
+wiliwili's GPL patch, the CA bundle's MPL, font licenses), and the two fonts
+from `assets/`.
 
 ### Installing on the Vita
 
@@ -200,6 +201,15 @@ installer and install it. On first launch the app creates
 `ux0:data/ViTube/` (login refresh token, history/settings, region/language,
 HD preference) — delete that folder any time to reset the app to its
 out-of-the-box state.
+
+If you're updating from version 1.2 or earlier, reboot the console once
+after installing. Those versions bundled the taiHEN plugin
+`reAvPlayer.suprx`, whose system-wide hooks in the shared `SceAvcodecUser`
+module stayed active after ViTube was closed from the LiveArea and crashed
+other apps with hardware video decoding (VitaDB, for one). Since 2.0, ViTube
+no longer needs the plugin — the decoder calls the SceVideodec functions
+directly — but a hook left behind by an older version only clears on
+reboot.
 
 ## Tests
 
@@ -229,8 +239,7 @@ ViTube is licensed under **GPL-3.0-only** ([`LICENSE`](LICENSE)). A table of
 all bundled/linked third-party components with license and source is in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — among them the patched
 FFmpeg build (LGPL base, brought to GPL-3.0 by wiliwili's `h264_vita`
-hardware-decode patch), ReAvPlayer (MIT), libcurl, Mbed TLS, jansson, and
-the bundled fonts.
+hardware-decode patch), libcurl, Mbed TLS, jansson, and the bundled fonts.
 
 `src/media/vita_decoder.c` descends from the
 [VitaWave](https://github.com/spyro-98/VitaWave) project. VitaWave's own

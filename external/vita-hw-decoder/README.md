@@ -28,8 +28,7 @@ VitaHwDecoderPlayer *player = vita_hw_decoder_create();
 int result = vita_hw_decoder_open(player, &config);
 ```
 
-Copy `reAvPlayer.suprx` to `app0:modules/reAvPlayer.suprx` in the VPK. The
-complete render loop is in `examples/local_file.c`.
+The complete render loop is in `examples/local_file.c`.
 
 ## Stream contract
 
@@ -54,5 +53,5 @@ link `VitaHwDecoder::VitaHwDecoder`. The installed package carries its pinned
 FFmpeg static archives, license texts and corresponding source, so consumers do
 not need to reconstruct its private link path.
 
-Licensed GPL-3.0-only. See `THIRD_PARTY_NOTICES.md` for FFmpeg, wiliwili,
-ReAvPlayer and VitaSDK requirements.
+Licensed GPL-3.0-only. See `THIRD_PARTY_NOTICES.md` for FFmpeg, wiliwili
+and VitaSDK requirements.

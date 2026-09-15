@@ -52,6 +52,16 @@ patch -d "$work/ffmpeg" -p1 < "$patch_file"
 # same access unit on every run). See the comments inside the patch.
 patch -d "$work/ffmpeg" -p1 < "$repo_root/tools/h264-vita-dpb.patch"
 
+# On top of that: decode through sceAvcdecDecodeAuInternal +
+# sceAvcdecDecodeGetPictureWithWorkPictureInternal instead of the public
+# sceAvcdecDecode. The decoder is created through the *Internal entry
+# points, and the public decode call only ever worked here because the
+# bundled ReAvPlayer plugin redirected it to that pair by hooking
+# SceAvcodecUser -- a module shared by every process, so the hooks outlived
+# ViTube and crashed the next video app until reboot
+# (shorelight82/vitube-vpk#2). See the comment inside the patch.
+patch -d "$work/ffmpeg" -p1 < "$repo_root/tools/h264-vita-internal-decode.patch"
+
 tar -C "$work" --exclude='ffmpeg/.git' -czf "$work/ffmpeg-n6.0-h264-vita-source.tar.gz" ffmpeg
 git -C "$work/wiliwili" archive --format=tar.gz \
   --prefix=wiliwili-88e5876b/ -o "$work/wiliwili-88e5876b.tar.gz" HEAD

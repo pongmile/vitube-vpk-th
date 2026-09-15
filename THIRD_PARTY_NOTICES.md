@@ -11,8 +11,7 @@ named here.
 | vita-hw-decoder, vita-https (`external/`) | GPL-3.0-only | this archive |
 | VitaWave ancestry of `src/media/vita_decoder.c` | GPL-3.0-only | this archive |
 | FFmpeg n6.0, commit `ea3d24bbe3c58b171e55fe2151fc7ffaca3ab3d2`, configured without `--enable-gpl` | LGPL-2.1-or-later | https://github.com/FFmpeg/FFmpeg |
-| wiliwili `h264_vita` backend, commit `88e5876bea9502d06f46a8656e3530684d3aaf7d` (patch sha256 `2d38529d10c74560db3909cf8c2f3e359b128c04fb29f6dd0085770ed81cef6c`), plus `external/vita-hw-decoder/tools/h264-vita-dpb.patch`; the patched FFmpeg is therefore GPL-3.0 | GPL-3.0 | https://github.com/xfangfang/wiliwili |
-| ReAvPlayer (`sce_modules/reAvPlayer.suprx`) | MIT | https://github.com/SonicMastr/ReAvPlayer |
+| wiliwili `h264_vita` backend, commit `88e5876bea9502d06f46a8656e3530684d3aaf7d` (patch sha256 `2d38529d10c74560db3909cf8c2f3e359b128c04fb29f6dd0085770ed81cef6c`), plus `external/vita-hw-decoder/tools/h264-vita-dpb.patch` and `h264-vita-internal-decode.patch`; the patched FFmpeg is therefore GPL-3.0 | GPL-3.0 | https://github.com/xfangfang/wiliwili |
 | libcurl | curl licence | https://curl.se/docs/copyright.html |
 | Mbed TLS 3.6.5 | Apache-2.0 | https://github.com/Mbed-TLS/mbedtls |
 | zlib, Zstandard | zlib licence, BSD-3-Clause | https://zlib.net, https://github.com/facebook/zstd |

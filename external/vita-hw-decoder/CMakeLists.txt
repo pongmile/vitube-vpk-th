@@ -29,7 +29,6 @@ add_library(vita_hw_decoder STATIC
   src/vita_hw_decoder.c
   src/file_stream.c
   src/module_log.c
-  src/decoder_runtime.c
   src/internal/software_video.c
   src/internal/elementary_audio.c
   src/internal/vita_aac_decoder.c)

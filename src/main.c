@@ -65,8 +65,7 @@ int main(void) {
     if (network_ready) {
         yt_oauth_load();
         vt_thumbs_init();
-        /* preload reAvPlayer.suprx while the user is still browsing */
-        vt_decoder_prepare_hardware_runtime();
+        vt_decoder_init();
         if (!http_connected())
             vt_ui_toast(vt_str(S_NO_NETWORK), vt_str(S_CONNECT_WIFI), 180);
         list_screen_run();

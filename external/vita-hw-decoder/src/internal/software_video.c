@@ -20,7 +20,6 @@
 #include <libavutil/mathematics.h>
 #include <libavutil/pixfmt.h>
 
-#include "decoder_runtime.h"
 #include "module_log.h"
 
 #define SCREEN_WIDTH  960
@@ -766,8 +765,7 @@ static void *vita_hw_software_video_thread(void *argp) {
 		AVStream *stream = st->demux->streams[st->stream_index];
 		const AVCodec *hardware_codec = NULL;
 #if VITA_HW_DECODER_HAS_H264_VITA
-		if (st->hardware_runtime_ready)
-			hardware_codec = avcodec_find_decoder_by_name("h264_vita");
+		hardware_codec = avcodec_find_decoder_by_name("h264_vita");
 #endif
 		if (hardware_codec) {
 			init_ret = open_h264_decoder(st, stream, hardware_codec, 1);
@@ -984,18 +982,6 @@ int vita_hw_software_video_start(SoftwareVideoState *st, AVFormatContext *demux,
 	if (st->source_fps <= 0) st->source_fps = expected_fps;
 	st->continuous_high_fps = st->source_fps >= 50 &&
 	                          (uint64_t)width * height >= 1280ULL * 640ULL;
-#if VITA_HW_DECODER_HAS_H264_VITA
-	/* ReAvPlayer is already a process-lifetime dependency of the working 360p
-	 * path. Load the shared codec runtime before the h264_vita thread, while
-	 * leaving h264_vita itself in sole ownership of the SceVideodec lifecycle. */
-	int hardware_prepare_ret = vita_hw_decoder_runtime_prepare();
-	if (hardware_prepare_ret >= 0) {
-		st->hardware_runtime_ready = 1;
-	} else {
-		log_printf("software video: Vita H.264 runtime unavailable -> 0x%08X; using CPU",
-		           (unsigned)hardware_prepare_ret);
-	}
-#endif
 	/* wiliwili's public h264_vita direct path requests VITA_NV12, whose decoder
 	 * pitch is 16-byte aligned. Match it exactly for cropped widths such as 854;
 	 * it is also sufficient for the NEON copy fallback. */
@@ -1021,7 +1007,7 @@ int vita_hw_software_video_start(SoftwareVideoState *st, AVFormatContext *demux,
 	st->ring_memory_bytes = st->slots[0].allocation_size *
 	                       SOFTWARE_VIDEO_COPY_FRAME_SLOTS;
 #if VITA_HW_DECODER_HAS_H264_VITA
-	if (SOFTWARE_VIDEO_HARDWARE_DIRECT_ENABLED && st->hardware_runtime_ready) {
+	if (SOFTWARE_VIDEO_HARDWARE_DIRECT_ENABLED) {
 		buffer_ret = allocate_zero_copy_pool(st);
 		if (buffer_ret >= 0) {
 			st->hardware_direct_available = 1;

@@ -11,7 +11,6 @@
 #include <libavutil/error.h>
 #include <libavutil/mathematics.h>
 
-#include "decoder_runtime.h"
 #include "module_log.h"
 #include "internal/elementary_audio.h"
 #include "internal/software_video.h"
@@ -68,10 +67,6 @@ struct VitaHwDecoderPlayer {
 	uint64_t clock_wall_us;
 	int clock_started;
 };
-
-int vita_hw_decoder_prepare_runtime(void) {
-	return vita_hw_decoder_runtime_prepare();
-}
 
 const char *vita_hw_decoder_backend_name(void) {
 	return "hardware";
@@ -583,7 +578,7 @@ static int open_session(VitaHwDecoderPlayer *player, uint64_t start_position_ms)
 	if (*player->cancel) { ret = AVERROR_EXIT; goto fail; }
 	/* The wait above also ends on a decode thread that has already died
 	 * (h264_vita brings SceVideodec up on the first access unit, so that is
-	 * where a missing runtime shows). Reporting such a session as opened
+	 * where a decoder that cannot start shows). Reporting such a session as opened
 	 * would skip the caller's clean open-time fallback and have it discover
 	 * the corpse on its next status poll instead. EOF during the pre-roll is
 	 * only a failure when nothing was decoded at all from position 0 — a

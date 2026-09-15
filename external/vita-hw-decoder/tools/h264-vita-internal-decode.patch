@@ -1,0 +1,71 @@
+--- a/libavcodec/vitadec_video.c
++++ b/libavcodec/vitadec_video.c
+@@ -146,6 +146,7 @@
+     void *decoder_ptr_codec_mem;
+     void *decoder_ptr_output;
+     int decoder_picture_int;
++    int decode_au_error_logged;
+     SceAvcdecCtrl decoder_ctrl;
+     AVFrame *decoder_dr_frame;
+ 
+@@ -917,6 +918,51 @@
+         avctx->pix_fmt, avctx->width, avctx->height);
+ 
+     return true;
++}
++
++// Drive the decoder through the *Internal entry points, not the public
++// sceAvcdecDecode().
++//
++// do_init creates the decoder with sceVideodecInitLibraryWithUnmapMemInternal
++// and sceAvcdecCreateDecoderInternal. Upstream then decodes through the public
++// sceAvcdecDecode(); in ViTube that call has only ever run redirected by
++// SonicMastr's ReAvPlayer, a taiHEN plugin. Its hook replaced the
++// _sceAvcdecDecode syscall stub inside SceAvcodecUser's sceAvcdecDecode
++// wrapper (an 8-byte veneer around that stub) with the pair below, handing
++// it the caller's own pointers, so the pair is the decode path proven on
++// hardware. SceAvcodecUser is a module every process shares: when the app is
++// killed from the LiveArea the plugin's module_stop never runs, the hooks
++// outlive it, and the next app that touches the hardware AVC decoder crashes
++// until reboot (shorelight82/vitube-vpk#2). Calling the pair directly needs
++// neither the plugin nor any system-wide patch.
++//
++// Behaviour mirrors the plugin's hook -- submit the access unit, then collect
++// the pictures that are ready, return the collector's status -- with two
++// deliberate differences: SCE_AVCDEC_ERROR_ES_BUFFER_FULL from the submission
++// reaches the caller (the hook swallowed it and silently dropped the access
++// unit), and any other submission error is logged once instead of vanishing
++// (once for the empty-AU poll, once for a real access unit, so the poll
++// cannot use up the budget of the message that matters).
++// The work-picture array is zero-initialised (the hook passed an
++// uninitialised one). The int both calls share is what the SDK headers name
++// pTimeout; it lives per decoder in decoder_picture_int, a field upstream
++// declared for this purpose and never used.
++static SceInt32 do_decode_au(AVCodecContext *avctx, SceAvcdecAu *au, SceAvcdecArrayPicture *pictures, int *buffer_full)
++{
++    VitaDecodeContextImpl *ctx = get_ctx_impl(avctx);
++    SceAvcdecArrayPicture work = {0};
++    SceInt32 ret = sceAvcdecDecodeAuInternal(&ctx->decoder_ctrl, au, &ctx->decoder_picture_int);
++    if (ret == SCE_AVCDEC_ERROR_ES_BUFFER_FULL) {
++        *buffer_full = 1;
++    } else if (ret < 0) {
++        int kind = au->es.size ? 2 : 1;
++        if (!(ctx->decode_au_error_logged & kind)) {
++            ctx->decode_au_error_logged |= kind;
++            av_log(avctx, AV_LOG_WARNING, "vita_h264 decode: submit au (%u bytes) -> 0x%x, collecting pictures anyway\n",
++                   (unsigned) au->es.size, ret);
++        }
++    }
++    return sceAvcdecDecodeGetPictureWithWorkPictureInternal(&ctx->decoder_ctrl, pictures, &work, &ctx->decoder_picture_int);
+ }
+ 
+ static int vita_decode(AVCodecContext *avctx, AVFrame *frame, int *got_frame, AVPacket *avpkt)
+@@ -993,7 +1039,7 @@
+             au.es.size = avpkt->size;
+         }
+ 
+-        ret = sceAvcdecDecode(&ctx->decoder_ctrl, &au, &ap);
++        ret = do_decode_au(avctx, &au, &ap, &buffer_full);
+         if (ret == SCE_AVCDEC_ERROR_ES_BUFFER_FULL) {
+             buffer_full = 1;
+         } else if (ret < 0) {

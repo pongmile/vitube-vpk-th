@@ -13,7 +13,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "ViTube")
 set(VITA_TITLEID  "VTUB00001")
-set(VITA_VERSION  "01.20")
+set(VITA_VERSION  "02.00")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -28,8 +28,7 @@ set(VITUBE_CURL_ROOT "${VITUBE_EXTERNAL}/vita-https/build/deps/curl-mbedtls")
 
 foreach(marker
     "${VITUBE_FFMPEG_ROOT}/lib/libavcodec.a"
-    "${VITUBE_CURL_ROOT}/lib/libcurl.a"
-    "${CMAKE_CURRENT_SOURCE_DIR}/sce_modules/reAvPlayer.suprx")
+    "${VITUBE_CURL_ROOT}/lib/libcurl.a")
   if(NOT EXISTS "${marker}")
     message(FATAL_ERROR "Missing prerequisite: ${marker}")
   endif()
@@ -134,7 +133,7 @@ target_link_libraries(${PROJECT_NAME}
   VitaHttps::VitaHttps
   vitube_avformat vitube_avcodec vitube_avutil
   vitube_jansson
-  SceAvPlayer_stub SceVideodec_stub SceCodecEngine_stub SceAudiodec_stub
+  SceVideodec_stub SceCodecEngine_stub SceAudiodec_stub
   SceGxm_stub SceAppMgr_stub SceAppUtil_stub SceCommonDialog_stub SceIme_stub
   SceTouch_stub
   SceAudio_stub SceDisplay_stub m pthread
@@ -149,7 +148,6 @@ vita_create_vpk(ViTube.vpk ${VITA_TITLEID} ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
   FILE sce_sys/icon0.png sce_sys/icon0.png
-  FILE sce_modules/reAvPlayer.suprx modules/reAvPlayer.suprx
   # Licence texts travel with the binary (GPLv3 s.4/s.6): ViTube's own GPL,
   # the notices naming every linked component, FFmpeg's LGPL and wiliwili's
   # GPL (installed by tools/build-ffmpeg.sh next to the libraries), the font

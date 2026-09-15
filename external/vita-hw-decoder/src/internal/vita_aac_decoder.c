@@ -79,9 +79,8 @@ int vita_hw_aac_decoder_init_ex(VitaAacDecoder *dec, uint32_t channels,
 	 * SCE_SYSMODULE_AUDIOCODEC (0x0037) and SCE_SYSMODULE_AVCDEC (0x0054)
 	 * returned SCE_SYSMODULE_ERROR_INVALID_VALUE (0x805A1000) on real
 	 * hardware — either neither of them was the real cause, or the module is
-	 * already made available elsewhere (e.g. by reAvPlayer.suprx/sceAvPlayer,
-	 * already initialized elsewhere in this same app session for the mini-
-	 * player). wiliwili (xfangfang/wiliwili, vitadec_audio.c) does not call
+	 * already resident (SceAvcodecUser is mapped into every process).
+	 * wiliwili (xfangfang/wiliwili, vitadec_audio.c) does not call
 	 * sceSysmoduleLoadModule here at all, but that is not sufficient
 	 * guarantee in isolation (their bootstrap may load AVCDEC elsewhere).
 	 * Therefore: we try, we log the outcome whatever it is, but we do not

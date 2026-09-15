@@ -91,7 +91,8 @@ typedef struct VtDecoderPlayerStatus {
 
 void vt_decoder_file_stream_factory(const char *path,
 	                                VtDecoderStreamFactory *factory);
-int vt_decoder_prepare_hardware_runtime(void);
+/* Routes FFmpeg's warnings and errors into the device log. Once, at start. */
+void vt_decoder_init(void);
 VtDecoderPlayer *vt_decoder_create(void);
 int vt_decoder_open(VtDecoderPlayer *player, const VtDecoderPlayerConfig *config);
 void vt_decoder_destroy(VtDecoderPlayer *player);

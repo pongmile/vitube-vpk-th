@@ -111,10 +111,6 @@ typedef struct VitaHwDecoderPlayerStatus {
 void vita_hw_decoder_file_stream_factory(const char *path,
 	                             VitaHwDecoderStreamFactory *factory);
 
-/* Loads the packaged decoder compatibility runtime once for the process.
- * Normal player open calls prepare it automatically; embedding applications
- * may call this before creating a separate SceAvPlayer instance. */
-int vita_hw_decoder_prepare_runtime(void);
 const char *vita_hw_decoder_backend_name(void);
 
 VitaHwDecoderPlayer *vita_hw_decoder_create(void);

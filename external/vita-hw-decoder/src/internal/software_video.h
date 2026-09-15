@@ -61,7 +61,6 @@ typedef struct {
 	uint32_t ring_memory_bytes;
 	int hardware_direct_available;
 	int zero_copy;
-	int hardware_runtime_ready;
 	int hardware_accelerated;
 	int source_fps;
 	int continuous_high_fps;

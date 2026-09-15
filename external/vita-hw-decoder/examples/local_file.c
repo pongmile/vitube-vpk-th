@@ -3,8 +3,7 @@
 
 #include "vita_hw_decoder.h"
 
-/* This function assumes that the host application has initialized vita2d and
- * packaged reAvPlayer.suprx at app0:modules/reAvPlayer.suprx. */
+/* This function assumes that the host application has initialized vita2d. */
 int play_local_h264_aac_file(const char *path) {
 	VitaHwDecoderStreamFactory stream;
 	vita_hw_decoder_file_stream_factory(path, &stream);

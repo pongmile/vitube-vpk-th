@@ -125,9 +125,8 @@ static void ffmpeg_log_bridge(void *ptr, int level, const char *fmt,
 	       count == VT_FFMPEG_LOG_LIMIT - 1 ? " (log limit reached)" : "");
 }
 
-int vt_decoder_prepare_hardware_runtime(void) {
+void vt_decoder_init(void) {
 	av_log_set_callback(ffmpeg_log_bridge);
-	return vita_hw_decoder_prepare_runtime();
 }
 
 VtDecoderPlayer *vt_decoder_create(void) {
