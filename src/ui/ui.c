@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <psp2/ctrl.h>
@@ -16,6 +17,7 @@
 
 #include "app.h"
 #include "log.h"
+#include "ui/thai_shape.h"
 
 /* Text is drawn with FreeType (vita2d_font), not the system PGF font, and
  * with ONE font instance per size. Why both halves matter:
@@ -40,23 +42,31 @@ typedef enum {
 } VtFontSlot;
 static const int g_font_px[VT_FONT_COUNT] = { 14, 18, 21, 36 };
 static vita2d_font *g_fonts[VT_FONT_COUNT];
-/* Second family for emoji, loaded on demand — see emoji_font() below. */
-static vita2d_font *g_emoji[VT_FONT_COUNT];
-static char g_emoji_failed[VT_FONT_COUNT];
+/* Every family by glyph_source()'s answer. Main is g_fonts above, loaded up
+ * front; the others load on demand — see fallback_font() below. */
+#define SRC_MAIN 0
+#define SRC_EMOJI 1
+#define SRC_THAI 2
+#define SRC_COUNT 3
+static const char *const g_font_path[SRC_COUNT] = {
+    "app0:font.ttf", "app0:emoji.ttf", "app0:thai.ttf",
+};
+static vita2d_font *g_fallback[SRC_COUNT][VT_FONT_COUNT];
+static char g_fallback_failed[SRC_COUNT][VT_FONT_COUNT];
 
 /* FreeType faces used only to ask which code points a font can draw;
  * vita2d keeps its own faces for the actual rendering. See glyph_source(). */
 static FT_Library g_ft;
-static FT_Face g_face_main, g_face_emoji;
+static FT_Face g_face[SRC_COUNT];
 
 static void open_coverage_faces(void) {
     if (FT_Init_FreeType(&g_ft) != 0) { g_ft = NULL; return; }
-    if (FT_New_Face(g_ft, "app0:font.ttf", 0, &g_face_main) != 0)
-        g_face_main = NULL;
-    if (FT_New_Face(g_ft, "app0:emoji.ttf", 0, &g_face_emoji) != 0)
-        g_face_emoji = NULL;
-    vt_log("ui: coverage faces main=%d emoji=%d", g_face_main != NULL,
-           g_face_emoji != NULL);
+    for (int i = 0; i < SRC_COUNT; i++)
+        if (FT_New_Face(g_ft, g_font_path[i], 0, &g_face[i]) != 0)
+            g_face[i] = NULL;
+    vt_log("ui: coverage faces main=%d emoji=%d thai=%d",
+           g_face[SRC_MAIN] != NULL, g_face[SRC_EMOJI] != NULL,
+           g_face[SRC_THAI] != NULL);
 }
 
 /* Kept only as a fallback: if the bundled TTF cannot be loaded the app still
@@ -108,14 +118,17 @@ void vt_ui_term(void) {
     for (int i = 0; i < VT_FONT_COUNT; i++) {
         if (g_fonts[i]) vita2d_free_font(g_fonts[i]);
         g_fonts[i] = NULL;
-        if (g_emoji[i]) vita2d_free_font(g_emoji[i]);
-        g_emoji[i] = NULL;
+        for (int f = 0; f < SRC_COUNT; f++) {
+            if (g_fallback[f][i]) vita2d_free_font(g_fallback[f][i]);
+            g_fallback[f][i] = NULL;
+        }
     }
     if (g_pgf) vita2d_free_pgf(g_pgf);
     g_pgf = NULL;
-    if (g_face_main) FT_Done_Face(g_face_main);
-    if (g_face_emoji) FT_Done_Face(g_face_emoji);
-    g_face_main = g_face_emoji = NULL;
+    for (int f = 0; f < SRC_COUNT; f++) {
+        if (g_face[f]) FT_Done_Face(g_face[f]);
+        g_face[f] = NULL;
+    }
     if (g_ft) FT_Done_FreeType(g_ft);
     g_ft = NULL;
 }
@@ -130,17 +143,21 @@ void vt_ui_term(void) {
  * it, so colour glyphs cannot come through. Emoji render as pictographs in
  * the surrounding text colour.
  *
- * Loaded lazily per size — the file is ~2 MB and each instance keeps its own
- * face, so sizes that never meet an emoji never pay for one. */
-static vita2d_font *emoji_font(VtFontSlot s) {
-    if (!g_emoji[s] && !g_emoji_failed[s]) {
-        g_emoji[s] = vita2d_load_font_file("app0:emoji.ttf");
-        if (!g_emoji[s]) {
-            g_emoji_failed[s] = 1;
-            vt_log("ui: emoji.ttf could NOT be loaded");
+ * Thai is a third family for the same reason: DejaVu has no Thai letters.
+ * assets/thai.ttf is Noto Sans Thai with its mark positioning baked into
+ * extra glyphs — see thai_shape.h.
+ *
+ * Loaded lazily per size — the emoji file is ~2 MB and each instance keeps
+ * its own face, so sizes that never meet an emoji never pay for one. */
+static vita2d_font *fallback_font(int src, VtFontSlot s) {
+    if (!g_fallback[src][s] && !g_fallback_failed[src][s]) {
+        g_fallback[src][s] = vita2d_load_font_file(g_font_path[src]);
+        if (!g_fallback[src][s]) {
+            g_fallback_failed[src][s] = 1;
+            vt_log("ui: %s could NOT be loaded", g_font_path[src]);
         }
     }
-    return g_emoji[s];
+    return g_fallback[src][s];
 }
 
 /* Decodes one UTF-8 sequence. Returns its byte length (1 for an invalid
@@ -176,6 +193,11 @@ static int in_emoji_block(unsigned int cp) {
            (cp >= 0x2b00 && cp <= 0x2bff);
 }
 
+/* Thai, and the private-use glyphs vt_thai_shape() rewrites it to. */
+static int in_thai_block(unsigned int cp) {
+    return (cp >= 0x0e00 && cp <= 0x0e7f) || vt_thai_private_use(cp);
+}
+
 /* See the block comment above text_runs(): the emoji font's astral glyphs are
  * reachable through a private-use remap; nothing else astral is drawable. */
 #define EMOJI_ASTRAL_LO 0x1f000u
@@ -185,22 +207,28 @@ static int in_emoji_block(unsigned int cp) {
 static int glyph_source(unsigned int cp) {
     if (cp == 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) return -1;
     if (cp < 0x80) return 0; /* ASCII: never worth a lookup */
-    int have_main = g_face_main && FT_Get_Char_Index(g_face_main, cp);
-    int have_emoji = g_face_emoji && FT_Get_Char_Index(g_face_emoji, cp);
+    int have[SRC_COUNT];
+    for (int i = 0; i < SRC_COUNT; i++)
+        have[i] = g_face[i] && FT_Get_Char_Index(g_face[i], cp);
     int src;
-    if (in_emoji_block(cp))
-        src = have_emoji ? 1 : have_main ? 0 : -1;
+    if (in_thai_block(cp))
+        src = have[SRC_THAI] ? SRC_THAI : have[SRC_MAIN] ? SRC_MAIN : -1;
+    else if (in_emoji_block(cp))
+        src = have[SRC_EMOJI] ? SRC_EMOJI : have[SRC_MAIN] ? SRC_MAIN : -1;
     else
-        src = have_main ? 0 : have_emoji ? 1 : -1;
+        src = have[SRC_MAIN] ? SRC_MAIN : have[SRC_EMOJI] ? SRC_EMOJI
+            : have[SRC_THAI] ? SRC_THAI : -1;
     /* Without coverage faces, fall back to a plain range guess. */
-    if (!g_face_main && !g_face_emoji) src = cp >= 0x1f000 ? 1 : 0;
+    if (!g_face[SRC_MAIN] && !g_face[SRC_EMOJI] && !g_face[SRC_THAI])
+        src = cp >= 0x1f000 ? SRC_EMOJI : SRC_MAIN;
     /* vita2d's UTF-8 reader stops at three bytes: an astral code point it
      * is handed comes out as four .notdef boxes. Only the emoji block has a
      * PUA remap (text_runs), so every other astral code point — the 471
      * mathematical letters and the like DejaVu covers, emoji tag characters
      * — is dropped instead, which is also the right rendering for a
      * monochrome subdivision-flag fallback. */
-    if (cp > 0xffff && !(src == 1 && cp >= EMOJI_ASTRAL_LO && cp <= EMOJI_ASTRAL_HI))
+    if (cp > 0xffff &&
+        !(src == SRC_EMOJI && cp >= EMOJI_ASTRAL_LO && cp <= EMOJI_ASTRAL_HI))
         src = -1;
     /* A code point neither font can draw is worth one line — it is the only
      * way a missing glyph shows up other than a box on screen. */
@@ -211,7 +239,7 @@ static int glyph_source(unsigned int cp) {
             if (seen[i] == cp) return src;
         if (seen_n < (int)(sizeof seen / sizeof *seen)) {
             seen[seen_n++] = cp;
-            vt_log("ui: no glyph for U+%04X in either font", cp);
+            vt_log("ui: no glyph for U+%04X in any font", cp);
         }
     }
     return src;
@@ -250,11 +278,11 @@ static int utf8_encode(char *dst, unsigned int cp) {
 
 /* What text_runs() actually draws for a code point. Styled Unicode letters
  * (Mathematical Alphanumerics, common in titles) fold to their plain ASCII
- * letter: neither font has them, and 'NEW' beats a row of boxes. Anything
- * else no font covers becomes U+25A1 (a box) instead of vanishing — a CJK or
- * Thai title used to draw as an empty string, with no sign anything was
- * missing. Only the joiners/selectors that are meant to be invisible are
- * still dropped (src -1). */
+ * letter: no font has them, and 'NEW' beats a row of boxes. Anything else
+ * no font covers becomes U+25A1 (a box) instead of vanishing — a CJK title
+ * used to draw as an empty string, with no sign anything was missing. Only
+ * the joiners/selectors that are meant to be invisible are still dropped
+ * (src -1). */
 #define PLACEHOLDER_CP 0x25a1u
 static unsigned int drawable_cp(unsigned int cp, int *src) {
     if (cp >= 0x1d400 && cp <= 0x1d6a3) {
@@ -276,6 +304,19 @@ static unsigned int drawable_cp(unsigned int cp, int *src) {
  * never be measured with different metrics than it is drawn with. */
 static int text_runs(int x, int y, unsigned int color, VtFontSlot s,
                      const char *text, int draw) {
+    /* Thai goes through the cluster substitution first (thai_shape.h), but
+     * only when thai.ttf is there to draw the private-use code points it
+     * produces. The output is never longer than the input. */
+    char shaped[512];
+    char *heap = NULL;
+    if (g_face[SRC_THAI] && vt_thai_present(text)) {
+        size_t cap = strlen(text) + 1;
+        char *buf = cap <= sizeof shaped ? shaped : (heap = malloc(cap));
+        if (buf) {
+            vt_thai_shape(buf, cap, text);
+            text = buf;
+        }
+    }
     int px = g_font_px[s];
     int baseline = y + FONT_BASELINE(px);
     int cursor = x;
@@ -297,7 +338,7 @@ static int text_runs(int x, int y, unsigned int color, VtFontSlot s,
             if (next_src < 0) { p += next_len; continue; } /* drop, keep run */
             if (next_src != src) break;
             unsigned int draw_cp = next_cp;
-            if (src == 1 && next_cp >= EMOJI_ASTRAL_LO &&
+            if (src == SRC_EMOJI && next_cp >= EMOJI_ASTRAL_LO &&
                 next_cp <= EMOJI_ASTRAL_HI)
                 draw_cp = EMOJI_PUA_BASE + (next_cp - EMOJI_ASTRAL_LO);
             n += (size_t)utf8_encode(run + n, draw_cp);
@@ -305,12 +346,13 @@ static int text_runs(int x, int y, unsigned int color, VtFontSlot s,
         }
         run[n] = '\0';
         if (!n) continue;
-        vita2d_font *f = src == 1 ? emoji_font(s) : g_fonts[s];
-        if (!f) f = g_fonts[s]; /* no emoji font: the box is still better
+        vita2d_font *f = src == SRC_MAIN ? g_fonts[s] : fallback_font(src, s);
+        if (!f) f = g_fonts[s]; /* no fallback font: the box is still better
                                  * than silently losing the character */
         if (draw) vita2d_font_draw_text(f, cursor, baseline, color, px, run);
         cursor += vita2d_font_text_width(f, px, run);
     }
+    free(heap);
     return cursor - x;
 }
 
@@ -335,8 +377,13 @@ void vt_ui_text_clipped(int x, int y, unsigned int color, float scale,
                         int max_w, const char *text) {
     VtFontSlot s = slot_for(scale);
     int line_h = g_fonts[s] ? FONT_LINE_H(g_font_px[s]) : (int)(26 * scale);
+    /* The clip is there for the width. Vertically it leaves a fifth of an em
+     * of slack on both sides: Thai stacks a tone mark over an upper vowel up
+     * to 1.08 em above the baseline, where the line box ends at 0.93, and
+     * hangs vowels under ฎ ฏ down to 0.43 em below it. */
+    int pad = g_fonts[s] ? g_font_px[s] / 5 : 0;
     vita2d_enable_clipping();
-    vita2d_set_clip_rectangle(x, y, x + max_w, y + line_h);
+    vita2d_set_clip_rectangle(x, y - pad, x + max_w, y + line_h + pad);
     vt_ui_text(x, y, color, scale, text);
     vita2d_disable_clipping();
 }

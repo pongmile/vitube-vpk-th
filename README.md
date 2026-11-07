@@ -49,9 +49,13 @@ custom server.
 - **Six-language UI** — German, English, Spanish, Brazilian Portuguese,
   Italian, French (`src/ui/strings.c`, one table per language in
   `src/ui/strings_*.c`) — plus a choice of content regions/languages
-  (DE/AT/CH, US, UK, FR, ES, IT, BR; `src/yt/region.c`), which affects
+  (DE/AT/CH, US, UK, FR, ES, IT, BR, TH; `src/yt/region.c`), which affects
   titles, dates, and search results. On first launch the region follows the
   console language, and the UI language follows the region.
+- **Thai text** — titles and channel names in Thai render with a bundled
+  Noto Sans Thai. vita2d has no shaping engine, so `tools/make-thai-font.py`
+  shapes every Thai cluster with HarfBuzz at build time and bakes the result
+  into private-use glyphs that `src/ui/thai_shape.c` substitutes at runtime.
 - **Touch and button controls** in the player (scrubbing, volume, quality
   selection) via `src/ui/player_touch.c` / `player_hud.c`.
 
@@ -70,7 +74,7 @@ custom server.
 | `src/net/` | Thin HTTP(S) wrapper over `vita-https` |
 | `external/` | Vendored dependencies (see below) |
 | `sce_sys/` | Contents of the VPK package: app icon |
-| `assets/` | Fonts (DejaVu Sans, Noto Emoji) with their license texts |
+| `assets/` | Fonts (DejaVu Sans, Noto Emoji, Noto Sans Thai) with their license texts |
 | `tests/` | Host-side unit tests (see [Tests](#tests)) |
 
 ### App core & UI
@@ -196,7 +200,7 @@ make -j$(nproc)
 The result is `build/ViTube.vpk` — the packaging step (`vita_create_vpk` in
 `CMakeLists.txt`) bundles the icon, all relevant license texts (GPLv3
 §4/§6-compliant: ViTube's own GPL, `THIRD_PARTY_NOTICES.md`, FFmpeg's LGPL,
-wiliwili's GPL patch, the CA bundle's MPL, font licenses), and the two fonts
+wiliwili's GPL patch, the CA bundle's MPL, font licenses), and the three fonts
 from `assets/`.
 
 ### Installing on the Vita
@@ -218,7 +222,7 @@ reboot.
 
 ## Tests
 
-`tests/` contains four host-side unit tests that **do not** run on the
+`tests/` contains five host-side unit tests that **do not** run on the
 Vita: `tests/stubs/` provides stand-in headers for `vita-https` and part of
 the VitaSDK kernel headers so logic like HLS playlist/segment handling can
 run on the build machine.
@@ -231,9 +235,11 @@ run on the build machine.
 - `test_player_touch.c`, `test_strings.c` — touch-gesture math and parity of
   every language table against the German original (format strings, button
   glyphs, key names, lengths), respectively.
+- `test_thai_shape.c` — the Thai cluster substitution against every entry of
+  the generated table, plus pass-through and truncation cases.
 
 There is **no** CMake/CTest target and no build script under `tests/`. Only
-for `test_player_touch.c` and `test_strings.c` is the build command
+for `test_player_touch.c`, `test_strings.c` and `test_thai_shape.c` is the build command
 documented directly in the file's header comment (a simple one-line `gcc`
 invocation that links in the corresponding `src/` file). For `test_hls.c`
 and `test_parse.c` there is no build command recorded in the repository.

@@ -26,6 +26,11 @@ static const yt_region_t g_regions[] = {
     /* Append only: region.txt stores the choice as its index, one digit.
      * YouTube's bare "pt" is Brazilian Portuguese (Portugal is "pt-PT"). */
     { "Brasil",            "pt", "BR" },
+    /* ประเทศไทย. No Thai catalogue: the UI falls back to English (strings.c),
+     * titles and dates come in Thai. Index 9, the last one a single digit
+     * can store. */
+    { "\xe0\xb8\x9b\xe0\xb8\xa3\xe0\xb8\xb0\xe0\xb9\x80\xe0\xb8\x97\xe0\xb8\xa8"
+      "\xe0\xb9\x84\xe0\xb8\x97\xe0\xb8\xa2", "th", "TH" },
 };
 #define REGION_COUNT ((int)(sizeof g_regions / sizeof *g_regions))
 

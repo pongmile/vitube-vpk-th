@@ -1,0 +1,79 @@
+name: Build VPK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host-side tests
+        run: |
+          gcc -Isrc -Wall -Werror -o /tmp/tt tests/test_thai_shape.c src/ui/thai_shape.c
+          /tmp/tt
+          gcc -Isrc -Wall -o /tmp/ts tests/test_strings.c src/ui/strings_table.c \
+              src/ui/strings_de.c src/ui/strings_en.c src/ui/strings_es.c \
+              src/ui/strings_pt.c src/ui/strings_it.c src/ui/strings_fr.c
+          /tmp/ts
+
+  vpk:
+    runs-on: ubuntu-latest
+    # Pinned: the dependency cache below is only valid for the SDK it was
+    # built against.
+    container: vitasdk/vitasdk:2026.08-20261029
+    steps:
+      - name: Host tools the dependency scripts need
+        # patch for the FFmpeg patches, perl for shasum.
+        run: apt-get update && apt-get install -y --no-install-recommends patch perl
+
+      - uses: actions/checkout@v4
+
+      - name: Cache FFmpeg and curl builds
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            external/vita-hw-decoder/build/deps
+            external/vita-https/build/deps
+          key: deps-vitasdk-2026.08-20261029-${{ hashFiles('external/vita-hw-decoder/tools/**', 'external/vita-https/tools/build-curl-mbedtls.sh', 'external/vita-https/patches/**') }}
+
+      - name: Build FFmpeg (h264_vita)
+        if: steps.deps.outputs.cache-hit != 'true'
+        working-directory: external/vita-hw-decoder
+        env:
+          VITAWAVE_FFMPEG_JOBS: 4
+        run: ./tools/build-ffmpeg.sh 2>&1 | tee /tmp/ffmpeg.log
+
+      - name: Build curl + Mbed TLS
+        if: steps.deps.outputs.cache-hit != 'true'
+        working-directory: external/vita-https
+        run: ./tools/build-curl-mbedtls.sh 2>&1 | tee /tmp/curl.log
+
+      - name: Build ViTube
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release 2>&1 | tee /tmp/vitube.log
+          cmake --build build -j4 2>&1 | tee -a /tmp/vitube.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ViTube-vpk
+          path: build/ViTube.vpk
+          if-no-files-found: error
+
+      # The end of the failing log as an annotation: those are readable on
+      # the run page, and through the API, without downloading the logs.
+      - name: Report the failing log
+        if: failure()
+        run: |
+          for f in /tmp/ffmpeg.log /tmp/curl.log /tmp/vitube.log; do
+            [ -s "$f" ] || continue
+            msg=$(tail -n 60 "$f" | sed 's/%/%25/g; s/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=$(basename "$f")::$msg"
+          done

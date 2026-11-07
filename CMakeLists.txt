@@ -75,6 +75,7 @@ add_executable(${PROJECT_NAME}
   src/media/remote_stream.c
   src/media/hls.c
   src/ui/ui.c
+  src/ui/thai_shape.c
   src/ui/touch.c
   src/ui/text_input.c
   src/ui/thumbs.c
@@ -160,6 +161,7 @@ vita_create_vpk(ViTube.vpk ${VITA_TITLEID} ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT
   FILE external/vita-https/licenses/certifi-MPL-2.0.txt licenses/certifi-MPL-2.0.txt
   FILE assets/FONT-LICENSE.txt licenses/FONT-LICENSE.txt
   FILE assets/EMOJI-LICENSE.txt licenses/EMOJI-LICENSE.txt
+  FILE assets/THAI-FONT-LICENSE.txt licenses/THAI-FONT-LICENSE.txt
   # DejaVu Sans, loaded from app0:font.ttf. Bundled because the system PGF/PVF
   # fonts cannot render crisply at more than one size (see ui.c); licence in
   # assets/FONT-LICENSE.txt.
@@ -168,5 +170,9 @@ vita_create_vpk(ViTube.vpk ${VITA_TITLEID} ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT
   # text path renders 8-bit coverage and cannot show CBDT colour glyphs).
   # Loaded on demand for code points font.ttf has no glyph for.
   FILE assets/emoji.ttf emoji.ttf
+  # Noto Sans Thai with HarfBuzz's mark positioning baked into extra
+  # private-use glyphs (tools/make-thai-font.py; see src/ui/thai_shape.h).
+  # Loaded on demand for Thai text.
+  FILE assets/thai.ttf thai.ttf
 )
 add_dependencies(ViTube.vpk-vpk ${PROJECT_NAME}.self-self)

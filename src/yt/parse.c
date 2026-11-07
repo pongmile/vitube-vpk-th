@@ -169,6 +169,16 @@ static int age_minutes(const char *s) {
          * the Spanish stems above; "an" covers ano/anos. Only the two words
          * Spanish spells differently are new. */
         { "dia",     1440 },   { "m\xc3\xaas", 43200 },
+        /* th: 3 วินาที / นาที / ชั่วโมง / วัน / สัปดาห์ / เดือน / ปีที่ผ่านมา.
+         * No stem prefixes another: วินาที and นาที differ in the first
+         * letter. */
+        { "\xe0\xb8\xa7\xe0\xb8\xb4\xe0\xb8\x99\xe0\xb8\xb2\xe0\xb8\x97\xe0\xb8\xb5", 0 },
+        { "\xe0\xb8\x99\xe0\xb8\xb2\xe0\xb8\x97\xe0\xb8\xb5", 1 },
+        { "\xe0\xb8\x8a\xe0\xb8\xb1\xe0\xb9\x88\xe0\xb8\xa7\xe0\xb9\x82\xe0\xb8\xa1\xe0\xb8\x87", 60 },
+        { "\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\x99", 1440 },
+        { "\xe0\xb8\xaa\xe0\xb8\xb1\xe0\xb8\x9b\xe0\xb8\x94\xe0\xb8\xb2\xe0\xb8\xab\xe0\xb9\x8c", 10080 },
+        { "\xe0\xb9\x80\xe0\xb8\x94\xe0\xb8\xb7\xe0\xb8\xad\xe0\xb8\x99", 43200 },
+        { "\xe0\xb8\x9b\xe0\xb8\xb5", 525600 },
     };
     if (!s) return -1;
     for (const char *p = s; *p; p++) {
