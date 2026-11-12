@@ -749,6 +749,13 @@ static void play(const DlItem *it) {
     yt_video_t v;
     memset(&v, 0, sizeof v);
     snprintf(v.video_id, sizeof v.video_id, "%s", it->video_id);
+    /* The player files what it played under History, as this struct: with no
+     * thumbnail URL the History row would show a grey box, and since a video
+     * watched again replaces its old entry, a copy that had a picture lost it
+     * by being played from here. The same URL the rows of this tab fall back
+     * to, and the engine saved the file from. */
+    snprintf(v.thumb_url, sizeof v.thumb_url,
+             "https://i.ytimg.com/vi/%s/mqdefault.jpg", it->video_id);
     snprintf(v.title, sizeof v.title, "%s", it->title);
     snprintf(v.channel, sizeof v.channel, "%s", it->channel);
     snprintf(v.duration, sizeof v.duration, "%s", it->duration);
