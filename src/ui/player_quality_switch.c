@@ -281,7 +281,7 @@ static int open_from_url_blocking(const char *url, int is_hls, int max_fps,
             .approximate_seek = 1,
             .start_paused = start_paused,
         },
-        url, is_hls, max_fps, cancel, source_out, 0,
+        url, is_hls, max_fps, cancel, source_out, 0, 0,
     };
     int ret = vt_ui_run_task(vt_str(S_BUFFERING), open_task, &open, cancel);
     if (ret < 0 || (cancel && *cancel)) {

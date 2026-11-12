@@ -1,4 +1,5 @@
-/* ViTube — fullscreen video player (720p via HLS first, direct fallback). */
+/* ViTube — fullscreen video player (720p via HLS first, direct fallback; a
+ * finished download plays from the memory card with no network at all). */
 #include "ui/player_screen.h"
 
 #include <pthread.h>
@@ -10,9 +11,12 @@
 #include <psp2/power.h>
 
 #include "app.h"
+#include "dl/dl.h"
 #include "log.h"
+#include "media/local_stream.h"
 #include "media/remote_stream.h"
 #include "media/vita_decoder.h"
+#include "net/http.h"
 #include "store.h"
 #include "ui/player_hud.h"
 #include "ui/player_quality_switch.h"
@@ -30,6 +34,13 @@
 /* A live stream paused longer than this is resumed by a fresh open. */
 #define LIVE_PAUSE_REOPEN_US (60ULL * 1000000ULL)
 #define SEEK_STEP_MS 10000ULL
+/* A downloaded file whose decoder session dies before playback has got this
+ * far (and before the viewer has seeked) is taken to be a bad file; later
+ * than that it is a playback error like any other. The engine checks a file
+ * when it finishes, so reaching here means the card or the container lied, and
+ * a download that is merely unlucky with the hardware decoder mid-video must
+ * not be thrown away and fetched again for it. */
+#define OFFLINE_BAD_START_MS 10000ULL
 /* Minimum time the "Wechsle auf ..." label stays up, so a switch that
  * finishes in a couple of frames still registers as having happened. It runs
  * for at least this long and for as long as the switch is actually in flight,
@@ -85,39 +96,70 @@ static void reset_input(SceCtrlData *previous, VtPlayerGesture *gesture) {
 
 /* --- main entry --------------------------------------------------------- */
 
-void player_screen_run(const yt_video_t *video) {
+/* How one run of the player ended, as far as player_screen_run needs to know. */
+typedef enum {
+    PLAY_ENDED,     /* played, was cancelled, or failed and said so itself */
+    PLAY_LOCAL_BAD  /* the downloaded file would not open, or the decoder gave
+                     * up on it in its first seconds; nothing has been shown */
+} PlayResult;
+
+/* One run of the player, in one of two modes.
+ *
+ * Online (local_path NULL) is what the player always was: resolve the video,
+ * open 720p HLS or a direct format, and keep both the picker and the
+ * fallbacks between them.
+ *
+ * Offline (local_path is a finished download) is the same loop with the
+ * network taken out of it. There is nothing to resolve, nothing to switch
+ * between and nothing to fall back to, so the state those depend on —
+ * `resolve`, is_hd, quality_pickable — is left at "no choice" rather than
+ * having each use guarded: with no formats and no HLS source, the Triangle
+ * menu stays shut and every HLS branch of the error ladder is unreachable.
+ * What offline does need to know for itself is `offline`: the source to open,
+ * the badge, and what a failure in the first seconds means. */
+static PlayResult play_video(const yt_video_t *video, const char *local_path) {
     static volatile int cancel;
     cancel = 0;
+    const int offline = local_path != NULL;
 
     /* 1. resolve direct progressive formats (fast; also gives metadata and
-     *    the fallback path if HD is unavailable). */
+     *    the fallback path if HD is unavailable). Nothing to ask for a file
+     *    that is already here: `resolve` stays zeroed (no formats, not live). */
     ResolveTask resolve = { video->video_id, &cancel, {0} };
-    int ret = vt_ui_run_task(vt_str(S_LOADING_VIDEO), resolve_task, &resolve,
+    int ret = 0;
+    int is_hd = 0;
+    int is_live = 0;
+    if (!offline) {
+        ret = vt_ui_run_task(vt_str(S_LOADING_VIDEO), resolve_task, &resolve,
                              &cancel);
-    if (cancel) return;
-    int is_hd = yt_hd_pref_get();
-    /* A live stream is HLS or nothing — YouTube publishes no progressive
-     * format for one — so the HD preference has no say here. Left to it,
-     * "HD off" would turn every live stream into "not playable". Which
-     * manifest gets opened is open_source_blocking's business; what matters
-     * from here on is that the transport bar must not offer to seek. */
-    int is_live = resolve.stream.is_live;
-    if (is_live) is_hd = 1;
-    if (ret < 0) {
-        vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
-                    resolve.stream.reason[0] ? resolve.stream.reason
-                        : vt_str(S_NETWORK_ERROR), 150);
-        return;
-    }
-    /* A video with zero progressive formats can still be playable via the HD
-     * server path; only give up outright when there is nothing left to try. */
-    if (resolve.stream.format_count == 0 && !is_hd) {
-        const char *reason = resolve.stream.reason[0] ? resolve.stream.reason
-                           : resolve.stream.playability[0]
-                           ? resolve.stream.playability
-                           : vt_str(S_ERR_NO_STREAM_DATA);
-        vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE), reason, 150);
-        return;
+        if (cancel) return PLAY_ENDED;
+        is_hd = yt_hd_pref_get();
+        /* A live stream is HLS or nothing — YouTube publishes no progressive
+         * format for one — so the HD preference has no say here. Left to it,
+         * "HD off" would turn every live stream into "not playable". Which
+         * manifest gets opened is open_source_blocking's business; what
+         * matters from here on is that the transport bar must not offer to
+         * seek. */
+        is_live = resolve.stream.is_live;
+        if (is_live) is_hd = 1;
+        if (ret < 0) {
+            vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
+                        resolve.stream.reason[0] ? resolve.stream.reason
+                            : vt_str(S_NETWORK_ERROR), 150);
+            return PLAY_ENDED;
+        }
+        /* A video with zero progressive formats can still be playable via the
+         * HD server path; only give up outright when there is nothing left to
+         * try. */
+        if (resolve.stream.format_count == 0 && !is_hd) {
+            const char *reason = resolve.stream.reason[0]
+                               ? resolve.stream.reason
+                               : resolve.stream.playability[0]
+                               ? resolve.stream.playability
+                               : vt_str(S_ERR_NO_STREAM_DATA);
+            vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE), reason, 150);
+            return PLAY_ENDED;
+        }
     }
 
     /* 2. open. Two stable stream slots so a later quality switch can open
@@ -189,71 +231,87 @@ void player_screen_run(const yt_video_t *video) {
      * The Triangle picker stays closed for the same reason: every entry it
      * could offer is the same resolution wearing different labels. */
     if (is_portrait) is_hd = 0;
-    int quality_pickable = !is_live && !is_portrait &&
+    int quality_pickable = !offline && !is_live && !is_portrait &&
                            resolve.stream.format_count > 0;
 
-    /* 720p FIRST: HD via HLS is the quality this player is meant to show,
-     * so it is the one worth blocking the first frame on — the old
-     * start-at-360p-then-upgrade flow meant every video visibly began
-     * blurry and spent its first seconds on a quality switch. The direct
-     * progressive format is the FALLBACK, used when the HLS resolve or
-     * open fails (age gate, missing manifest, network) — and again
-     * mid-video if HLS playback later dies (see the status.error branch).
-     * A manual pick in the Triangle menu applies to this video only; the
-     * default this reads lives in the Mehr tab. */
-    /* YouTube already said why this one cannot play (age gate, private,
-     * region, premiere) and offers no format: asking the HLS route as well
-     * only produced a technical "HD unavailable" on top of the real reason.
-     * A live stream is exempt — its progressive format count is always 0. */
-    if (!is_live && resolve.stream.format_count == 0 &&
-        resolve.stream.playability[0] &&
-        strcmp(resolve.stream.playability, "OK") != 0) {
-        vt_log("%s: not playable (%s), no formats", video->video_id,
-               resolve.stream.playability);
-        vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
-                    resolve.stream.reason[0] ? resolve.stream.reason
-                                             : resolve.stream.playability,
-                    150);
-        return;
-    }
-    ret = -1;
-    if (is_hd && !direct_good_enough) {
-        ret = open_source_blocking(video->video_id, 1, &resolve.stream,
-                                   quality, 100, 0, &cancel, &sources[cur],
-                                   &player);
-        if (cancel) return;
-        if (ret < 0 && resolve.stream.format_count > 0)
-            vt_ui_toast(vt_str(S_HD_UNAVAILABLE),
-                        vt_str(S_STARTING_LOWER_QUALITY), 100);
+    if (offline) {
+        /* The file is already on the card: open it and play. No spinner
+         * beyond the open's own, no HD attempt, no direct fallback — if it
+         * will not open there is nothing else to try HERE, and
+         * player_screen_run decides whether the network can take over. */
+        vt_log("%s: offline, playing %s", video->video_id, local_path);
+        ret = open_local_blocking(local_path, 100, 0, &cancel, &sources[cur],
+                                  &player);
+        if (cancel) return PLAY_ENDED;
+        if (ret < 0 || !player) {
+            vt_log("%s: downloaded file would not open (ret=%d)",
+                   video->video_id, ret);
+            return PLAY_LOCAL_BAD;
+        }
     } else {
-        is_hd = 0;
-    }
-    if (ret < 0) {
-        if (resolve.stream.format_count == 0) {
-            /* HLS was the only option (a live stream, or a video without a
-             * progressive format) and it failed; nothing left to try. Say so
-             * — a silent return to the list reads as a crash. */
-            vt_log("%s: hls-only open failed ret=%d (live=%d), giving up",
-                   video->video_id, ret, is_live);
+        /* 720p FIRST: HD via HLS is the quality this player is meant to show,
+         * so it is the one worth blocking the first frame on — the old
+         * start-at-360p-then-upgrade flow meant every video visibly began
+         * blurry and spent its first seconds on a quality switch. The direct
+         * progressive format is the FALLBACK, used when the HLS resolve or
+         * open fails (age gate, missing manifest, network) — and again
+         * mid-video if HLS playback later dies (see the status.error branch).
+         * A manual pick in the Triangle menu applies to this video only; the
+         * default this reads lives in the Mehr tab. */
+        /* YouTube already said why this one cannot play (age gate, private,
+         * region, premiere) and offers no format: asking the HLS route as well
+         * only produced a technical "HD unavailable" on top of the real reason.
+         * A live stream is exempt — its progressive format count is always 0. */
+        if (!is_live && resolve.stream.format_count == 0 &&
+            resolve.stream.playability[0] &&
+            strcmp(resolve.stream.playability, "OK") != 0) {
+            vt_log("%s: not playable (%s), no formats", video->video_id,
+                   resolve.stream.playability);
             vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
                         resolve.stream.reason[0] ? resolve.stream.reason
-                                                 : vt_str(S_NETWORK_ERROR),
+                                                 : resolve.stream.playability,
                         150);
-            return;
+            return PLAY_ENDED;
         }
-        is_hd = 0;
-        ret = open_source_blocking(video->video_id, 0, &resolve.stream,
-                                   quality, 100, 0, &cancel, &sources[cur],
-                                   &player);
-        if (cancel) return;
-    }
-    if (ret < 0 || !player) {
-        /* Previously a failed open fell straight into the playback loop
-         * with a NULL player: a black screen that only Circle could leave. */
-        vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
-                    resolve.stream.reason[0] ? resolve.stream.reason
-                                             : vt_str(S_NETWORK_ERROR), 150);
-        return;
+        ret = -1;
+        if (is_hd && !direct_good_enough) {
+            ret = open_source_blocking(video->video_id, 1, &resolve.stream,
+                                       quality, 100, 0, &cancel, &sources[cur],
+                                       &player);
+            if (cancel) return PLAY_ENDED;
+            if (ret < 0 && resolve.stream.format_count > 0)
+                vt_ui_toast(vt_str(S_HD_UNAVAILABLE),
+                            vt_str(S_STARTING_LOWER_QUALITY), 100);
+        } else {
+            is_hd = 0;
+        }
+        if (ret < 0) {
+            if (resolve.stream.format_count == 0) {
+                /* HLS was the only option (a live stream, or a video without a
+                 * progressive format) and it failed; nothing left to try. Say so
+                 * — a silent return to the list reads as a crash. */
+                vt_log("%s: hls-only open failed ret=%d (live=%d), giving up",
+                       video->video_id, ret, is_live);
+                vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
+                            resolve.stream.reason[0] ? resolve.stream.reason
+                                                     : vt_str(S_NETWORK_ERROR),
+                            150);
+                return PLAY_ENDED;
+            }
+            is_hd = 0;
+            ret = open_source_blocking(video->video_id, 0, &resolve.stream,
+                                       quality, 100, 0, &cancel, &sources[cur],
+                                       &player);
+            if (cancel) return PLAY_ENDED;
+        }
+        if (ret < 0 || !player) {
+            /* Previously a failed open fell straight into the playback loop
+             * with a NULL player: a black screen that only Circle could leave. */
+            vt_ui_toast(vt_str(S_VIDEO_UNPLAYABLE),
+                        resolve.stream.reason[0] ? resolve.stream.reason
+                                                 : vt_str(S_NETWORK_ERROR), 150);
+            return PLAY_ENDED;
+        }
     }
 
     /* 3. playback loop */
@@ -266,6 +324,10 @@ void player_screen_run(const yt_video_t *video) {
     int fill_screen = 0;
     int volume = 100;
     int exit_code = 0;
+    /* Offline only: still in the stretch where a failure means the FILE is
+     * bad (see OFFLINE_BAD_START_MS), and the verdict once it has failed. */
+    int local_at_start = offline;
+    int bad_local = 0;
     /* A live stream's position_ms is the encoder's absolute MPEG-TS
      * timestamp (3:17:15 on the first frame in the shipped device log), not
      * anything a viewer can read as time. The HUD shows the time since the
@@ -402,6 +464,9 @@ void player_screen_run(const yt_video_t *video) {
         vt_decoder_get_status(player, &status);
         if (is_live && !live_join_ms && status.position_ms)
             live_join_ms = status.position_ms;
+        if (local_at_start && status.opened && !status.error &&
+            status.position_ms >= OFFLINE_BAD_START_MS)
+            local_at_start = 0;
 
         if (!status.error && !status.eof && now >= next_status_log) {
             next_status_log = now + STATUS_LOG_INTERVAL_US;
@@ -465,7 +530,8 @@ void player_screen_run(const yt_video_t *video) {
                                                                           : "none";
             vt_log("%s=%s q=%s decode error at %u ms: %ux%u@%dfps "
                    "ready=%d/%d decoded=%u shown=%u dropped=%u",
-                   backend_name, video->video_id, is_hd ? "hd" : "direct",
+                   backend_name, video->video_id,
+                   offline ? "local" : is_hd ? "hd" : "direct",
                    (unsigned)status.position_ms, status.width, status.height,
                    status.fps, status.ready_frames, status.frame_capacity,
                    status.frames_decoded, status.frames_shown,
@@ -609,6 +675,15 @@ void player_screen_run(const yt_video_t *video) {
                 vt_log("%s error is terminal (%s)", backend_name,
                        status.opened ? "no further fallback"
                                      : "session already closed by a failed reopen");
+            }
+            /* A downloaded file that dies this early is not a stream having a
+             * bad moment: reopening it at the same place has been tried and
+             * there is no other source to go to. The wrapper tells the engine,
+             * and plays the video from the network instead if it can. */
+            if (local_at_start) {
+                vt_log("%s: downloaded file failed at %u ms",
+                       video->video_id, (unsigned)status.position_ms);
+                bad_local = 1;
             }
             exit_code = -1;
             break;
@@ -763,6 +838,9 @@ void player_screen_run(const yt_video_t *video) {
             }
         }
         if (want_seek) {
+            /* The viewer has moved on from the start: a failure from here on
+             * is where they went, not necessarily the file's first seconds. */
+            local_at_start = 0;
             /* Never ask the engine to resume AT the end: audio hits EOF
              * before its first grain and the session ends in a black frame
              * instead of showing the last second and finishing. */
@@ -818,13 +896,18 @@ void player_screen_run(const yt_video_t *video) {
         vt_decoder_present(player, fill_screen);
         if (hud_visible) {
             vt_decoder_get_status(player, &status);
-            char qlabel[40];
-            quality_label(is_hd, &resolve.stream, quality, qlabel, sizeof qlabel);
+            char qlabel[40] = "";
+            if (!offline)
+                quality_label(is_hd, &resolve.stream, quality, qlabel,
+                              sizeof qlabel);
             VtDecoderPlayerStatus hud_status = status;
             if (is_live)
                 hud_status.position_ms = status.position_ms > live_join_ms
                                        ? status.position_ms - live_join_ms : 0;
-            draw_hud(video, &hud_status, volume, "HW", qlabel,
+            /* Offline says so where the decoder name would be: the viewer can
+             * tell at a glance that nothing is being streamed. */
+            draw_hud(video, &hud_status, volume,
+                     offline ? vt_str(S_PLAYER_OFFLINE) : "HW", qlabel,
                      gesture.active ? (int64_t)gesture.target_ms : -1,
                      is_live, quality_pickable);
         }
@@ -865,6 +948,8 @@ void player_screen_run(const yt_video_t *video) {
     vt_decoder_destroy(player);
     player_source_term(&sources[cur]);
     ui_touch_reset();
+    /* Nothing was watched, and the wrapper has the message to give. */
+    if (bad_local) return PLAY_LOCAL_BAD;
     /* Recorded on the way out, not on the way in. It only lands here if the
      * stream opened, so nothing unplayable is remembered as watched — and the
      * synchronous card write it costs happens where a stall does not show,
@@ -872,4 +957,44 @@ void player_screen_run(const yt_video_t *video) {
     vt_store_history_add(video);
     if (exit_code < 0)
         vt_ui_toast(vt_str(S_PLAYBACK_ERROR), vt_str(S_VIDEO_ENDED), 120);
+    return PLAY_ENDED;
+}
+
+/* --- public entry ---------------------------------------------------------- */
+
+void player_screen_run(const yt_video_t *video) {
+    /* Same size as the stream factory keeps, so a path that fits here always
+     * fits there: a good file must not look bad because its name was cut. */
+    char path[VT_LOCAL_STREAM_PATH_MAX];
+    if (dl_local_path(video->video_id, path, sizeof path)) {
+        /* The download wins over streaming: it starts at once, takes no
+         * bandwidth, and works with Wi-Fi off. It is also not bracketed by
+         * dl_playback_begin/end below — it uses no network, and holding the
+         * engine back for it would stall the other downloads for nothing. */
+        if (play_video(video, path) != PLAY_LOCAL_BAD) return;
+
+        /* The file passed the engine's check and still would not play. Hand
+         * it back so it can be fetched again, say so, and — if there is a
+         * network — fall through to streaming, so the viewer still gets to
+         * watch what they asked for. */
+        dl_report_bad_file(video->video_id);
+        int online = http_connected();
+        vt_log("%s: downloaded file is bad, reported (%s)", video->video_id,
+               online ? "streaming instead" : "offline, nothing to play");
+        vt_ui_toast(vt_str(S_PLAYER_DL_DAMAGED),
+                    vt_str(S_PLAYER_DL_DAMAGED_HINT), online ? 100 : 150);
+        if (!online) return;
+    }
+
+    /* An online playback shares the connection with the download engine, which
+     * holds its transfer for as long as this is between begin and end so a 720p
+     * stream is not starved. The pair is here, around the one call, rather than
+     * inside play_video: that function has a dozen ways out (give-ups before
+     * the first frame, Circle at any spinner, the HLS-to-direct fallback, a
+     * failed quality switch) and a begin without its end would leave every
+     * download waiting for a playback that is long over. play_video returns
+     * normally from every one of them, so this end always runs. */
+    dl_playback_begin();
+    play_video(video, NULL);
+    dl_playback_end();
 }
