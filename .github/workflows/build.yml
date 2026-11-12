@@ -32,6 +32,9 @@ jobs:
           gcc -Isrc -Wall -Wextra -Werror -o /tmp/tls tests/test_local_stream.c \
               src/media/local_stream.c
           /tmp/tls
+          gcc -Isrc -Wall -Wextra -Werror -o /tmp/tdf tests/test_dl_format.c \
+              src/ui/dl_format.c
+          /tmp/tdf
 
   vpk:
     runs-on: ubuntu-latest

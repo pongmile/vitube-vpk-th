@@ -26,6 +26,17 @@ void vt_ui_hint_bar(const char *hint);
 /* Persistent tab row below the top bar (Start/Suche/Abos). y is fixed at
  * the top bar's bottom edge; returns the row's height in pixels. */
 int vt_ui_tab_bar(const char *const *tabs, int count, int active);
+/* The same with a count bubble after the label of every tab whose badges[i]
+ * is above 0 (badges may be NULL). The bubble widens its tab, and
+ * vt_ui_tab_hit() knows. */
+int vt_ui_tab_bar_badged(const char *const *tabs, const int *badges, int count,
+                         int active);
+/* The tab under a touch at (x, y), or -1 when it is not on the bar. Uses the
+ * layout vt_ui_tab_bar_badged() draws with, so it must be given the same
+ * `tabs` and `badges`. The target is the bar's full height plus a strip
+ * of the top bar above it. */
+int vt_ui_tab_hit(const char *const *tabs, const int *badges, int count, int x,
+                  int y);
 
 /* D-pad + left-stick navigation with initial delay and repeat.
  * Returns direction bits (SCE_CTRL_UP/DOWN/LEFT/RIGHT). */
@@ -71,5 +82,14 @@ typedef struct {
  * own loop and call this once per frame. */
 void vt_ui_menu_draw(const char *title, const VtMenuItem *items, int count,
                      int cursor);
+
+/* Touch twin of vt_ui_menu_draw(): the entry under (x, y), VT_MENU_HIT_NONE
+ * for a spot inside the box that is no entry (its title), or
+ * VT_MENU_HIT_OUTSIDE for a spot beside it, which callers treat as "dismiss".
+ * Pass the same title/items/count that were drawn. */
+#define VT_MENU_HIT_NONE (-1)
+#define VT_MENU_HIT_OUTSIDE (-2)
+int vt_ui_menu_hit(const char *title, const VtMenuItem *items, int count,
+                   int x, int y);
 
 #endif

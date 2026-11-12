@@ -101,7 +101,7 @@ static void check_language(VtLangChoice lang) {
          * when a language is added; these only catch a runaway. */
         int cp = codepoints(s);
         int limit = i == S_TAB_HOME || i == S_TAB_SEARCH || i == S_TAB_SUBS ||
-                    i == S_TAB_MORE ? 14 : 90;
+                    i == S_TAB_DOWNLOADS || i == S_TAB_MORE ? 14 : 90;
         CHECK(cp <= limit, "%s: id %d: %d code points, limit %d: \"%s\"",
               code, i, cp, limit, s);
         if (strcmp(de, s) != 0) translated++;

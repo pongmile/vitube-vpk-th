@@ -180,4 +180,71 @@ const char *const vt_strings_en[VT_STR_COUNT] = {
     [S_PLAYER_OFFLINE] = "Offline",
     [S_PLAYER_DL_DAMAGED] = "Download damaged",
     [S_PLAYER_DL_DAMAGED_HINT] = "Please download it again",
+    /* === BEGIN downloads UI (see strings.h) === */
+    /* --- downloads: tab and storage --- */
+    [S_TAB_DOWNLOADS] = "Downloads",
+    [S_DL_DECIMAL_MARK] = ".",
+    [S_DL_STORAGE] = "Free %s of %s · Downloads %s",
+    [S_DL_STORAGE_LOW] = "Memory card is full: only %s free · Downloads %s",
+    [S_DL_FULL_FREE] = "Memory card is full: only %s free",
+    /* --- downloads: empty state --- */
+    [S_DL_EMPTY_TITLE] = "No downloads yet",
+    [S_DL_EMPTY_LINE1] = "Highlight a video in any list and press SELECT,",
+    [S_DL_EMPTY_LINE2] = "then choose Download. It will play later without "
+                         "Wi-Fi.",
+    /* --- downloads: status line --- */
+    [S_DL_ST_QUEUED] = "In queue",
+    [S_DL_ST_RESOLVING] = "Preparing ...",
+    [S_DL_ST_PERCENT] = "%d %%",
+    [S_DL_ST_OF] = "%s of %s",
+    [S_DL_ST_PAUSED] = "Paused",
+    [S_DL_ST_WAIT_PLAYBACK] = "Waiting for the video to finish",
+    [S_DL_ST_RETRY_IN] = "Retrying in %s",
+    [S_DL_ST_RETRY_NOW] = "Retrying ...",
+    [S_DL_ST_VERIFYING] = "Checking file ...",
+    [S_DL_ST_READY] = "Ready",
+    /* --- downloads: why one failed --- */
+    [S_DL_ERR_NO_SPACE] = "Needs %s, only %s free",
+    [S_DL_ERR_SPACE_FREED] = "There is room now: retry to download",
+    [S_DL_ERR_DISK_FULL] = "Memory card is full",
+    [S_DL_ERR_NOT_DOWNLOADABLE] = "This video cannot be downloaded",
+    [S_DL_ERR_VERIFY] = "File is damaged — retry downloads it again",
+    [S_DL_ERR_NETWORK] = "Network problem — retry to continue",
+    [S_DL_ERR_URL] = "Could not get the video link — retry later",
+    [S_DL_ERR_IO] = "Could not write the file — retry",
+    /* --- downloads: the menu --- */
+    [S_DLM_TITLE] = "Download",
+    [S_DLM_TITLE_FREE] = "Download · %s free",
+    [S_DLM_DOWNLOAD] = "Download",
+    [S_DLM_OPEN] = "Open in Downloads",
+    [S_DLM_PLAY] = "Play",
+    [S_DLM_PAUSE] = "Pause",
+    [S_DLM_RESUME] = "Resume",
+    [S_DLM_RETRY] = "Retry",
+    [S_DLM_RETRY_NOW] = "Try now",
+    [S_DLM_PAUSE_ALL] = "Pause all",
+    [S_DLM_RESUME_ALL] = "Resume all",
+    [S_DLM_DELETE] = "Delete download",
+    [S_DLM_CONFIRM_DELETE] = "Delete this download?",
+    [S_DLM_YES_DELETE] = "Delete",
+    [S_DLM_KEEP] = "Keep",
+    /* --- downloads: what the app says afterwards --- */
+    [S_DLT_QUEUED] = "Added to downloads",
+    [S_DLT_EXISTS] = "Already in downloads",
+    [S_DLT_BAD] = "Cannot download this video",
+    [S_DLT_DELETED] = "Download deleted",
+    /* --- downloads: hint bars --- */
+    [S_HINT_DL_ROW] = "✕ %s   SELECT Menu   △ Search",
+    [S_HINT_DL_ROW_PLAIN] = "SELECT Menu   △ Search",
+    [S_HINT_HOME_DL] = "△ Search   ✕ Play   START History   SELECT Download",
+    [S_HINT_HISTORY_DL] = "✕ Play   △ Search   START Back   SELECT Download",
+    [S_HINT_SEARCH_VIDEOS_DL] = "△ Search   ✕ Play   □ Channels (%d)   START "
+                                "History   SELECT Download",
+    [S_HINT_SUBS_VIDEOS_DL] = "□ Channels   ✕ Play   △ Search   SELECT "
+                              "Download",
+    [S_HINT_CHANNEL_UNSUB_DL] = "○ Back   ✕ Play   □ Unsubscribe   SELECT "
+                                "Download",
+    [S_HINT_CHANNEL_SUB_DL] = "○ Back   ✕ Play   □ Subscribe   SELECT "
+                              "Download",
+    /* === END downloads UI === */
 };

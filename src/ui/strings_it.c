@@ -185,4 +185,73 @@ const char *const vt_strings_it[VT_STR_COUNT] = {
     [S_PLAYER_OFFLINE] = "Offline",
     [S_PLAYER_DL_DAMAGED] = "Download danneggiato",
     [S_PLAYER_DL_DAMAGED_HINT] = "Scaricalo di nuovo",
+    /* === BEGIN downloads UI (see strings.h) === */
+    /* --- downloads: tab and storage --- */
+    [S_TAB_DOWNLOADS] = "Download",
+    [S_DL_DECIMAL_MARK] = ",",
+    [S_DL_STORAGE] = "Libero %s su %s · Download %s",
+    [S_DL_STORAGE_LOW] = "Scheda di memoria piena: restano solo %s · "
+                         "Download %s",
+    [S_DL_FULL_FREE] = "Scheda di memoria piena: restano solo %s",
+    /* --- downloads: empty state --- */
+    [S_DL_EMPTY_TITLE] = "Ancora nessun download",
+    [S_DL_EMPTY_LINE1] = "Seleziona un video in un elenco e premi SELECT,",
+    [S_DL_EMPTY_LINE2] = "poi scegli Scarica. Si riprodurrà poi senza Wi-Fi.",
+    /* --- downloads: status line --- */
+    [S_DL_ST_QUEUED] = "In coda",
+    [S_DL_ST_RESOLVING] = "Preparazione ...",
+    [S_DL_ST_PERCENT] = "%d %%",
+    [S_DL_ST_OF] = "%s di %s",
+    [S_DL_ST_PAUSED] = "In pausa",
+    [S_DL_ST_WAIT_PLAYBACK] = "In attesa che il video finisca",
+    [S_DL_ST_RETRY_IN] = "Nuovo tentativo tra %s",
+    [S_DL_ST_RETRY_NOW] = "Nuovo tentativo ...",
+    [S_DL_ST_VERIFYING] = "Controllo del file ...",
+    [S_DL_ST_READY] = "Pronto",
+    /* --- downloads: why one failed --- */
+    [S_DL_ERR_NO_SPACE] = "Servono %s, liberi solo %s",
+    [S_DL_ERR_SPACE_FREED] = "Ora c'è spazio: riprova",
+    [S_DL_ERR_DISK_FULL] = "La scheda di memoria è piena",
+    [S_DL_ERR_NOT_DOWNLOADABLE] = "Questo video non può essere scaricato",
+    [S_DL_ERR_VERIFY] = "File danneggiato — riprovare lo scarica di nuovo",
+    [S_DL_ERR_NETWORK] = "Problema di rete — riprova per continuare",
+    [S_DL_ERR_URL] = "Link del video non ottenuto — riprova più tardi",
+    [S_DL_ERR_IO] = "Impossibile salvare il file — riprova",
+    /* --- downloads: the menu --- */
+    [S_DLM_TITLE] = "Download",
+    [S_DLM_TITLE_FREE] = "Download · %s liberi",
+    [S_DLM_DOWNLOAD] = "Scarica",
+    [S_DLM_OPEN] = "Apri in Download",
+    [S_DLM_PLAY] = "Riproduci",
+    [S_DLM_PAUSE] = "Pausa",
+    [S_DLM_RESUME] = "Riprendi",
+    [S_DLM_RETRY] = "Riprova",
+    [S_DLM_RETRY_NOW] = "Prova ora",
+    [S_DLM_PAUSE_ALL] = "Pausa tutto",
+    [S_DLM_RESUME_ALL] = "Riprendi tutto",
+    [S_DLM_DELETE] = "Elimina download",
+    [S_DLM_CONFIRM_DELETE] = "Eliminare questo download?",
+    [S_DLM_YES_DELETE] = "Elimina",
+    [S_DLM_KEEP] = "Mantieni",
+    /* --- downloads: what the app says afterwards --- */
+    [S_DLT_QUEUED] = "Aggiunto ai download",
+    [S_DLT_EXISTS] = "Già nei download",
+    [S_DLT_BAD] = "Impossibile scaricare questo video",
+    [S_DLT_DELETED] = "Download eliminato",
+    /* --- downloads: hint bars --- */
+    [S_HINT_DL_ROW] = "✕ %s   SELECT Menu   △ Cerca",
+    [S_HINT_DL_ROW_PLAIN] = "SELECT Menu   △ Cerca",
+    [S_HINT_HOME_DL] = "△ Cerca   ✕ Riproduci   START Cronologia   SELECT "
+                       "Scarica",
+    [S_HINT_HISTORY_DL] = "✕ Riproduci   △ Cerca   START Indietro   SELECT "
+                          "Scarica",
+    [S_HINT_SEARCH_VIDEOS_DL] = "△ Cerca   ✕ Riproduci   □ Canali (%d)   "
+                                "START Cronologia ricerche   SELECT Scarica",
+    [S_HINT_SUBS_VIDEOS_DL] = "□ Canali   ✕ Riproduci   △ Cerca   SELECT "
+                              "Scarica",
+    [S_HINT_CHANNEL_UNSUB_DL] = "○ Indietro   ✕ Riproduci   □ Annulla "
+                                "iscrizione   SELECT Scarica",
+    [S_HINT_CHANNEL_SUB_DL] = "○ Indietro   ✕ Riproduci   □ Iscriviti   "
+                              "SELECT Scarica",
+    /* === END downloads UI === */
 };
