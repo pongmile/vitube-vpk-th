@@ -6,6 +6,7 @@
 #include <psp2/kernel/processmgr.h>
 
 #include "app.h"
+#include "dl/dl.h"
 #include "log.h"
 #include "store.h"
 #include "media/vita_decoder.h"
@@ -68,12 +69,19 @@ int main(void) {
         yt_oauth_load();
         vt_thumbs_init();
         vt_decoder_init();
+        /* After http_init and the network watcher (it asks for both), and
+         * before any screen: the list and the player consult it. A failure
+         * only means downloads are unavailable; the app goes on. */
+        if (dl_init() < 0) vt_log("downloads unavailable");
         /* No "No network — connect to Wi-Fi and restart" toast here any
          * more: the first Start load now shows its own "Waiting for Wi-Fi"
          * screen and goes ahead by itself once the console has associated
          * (ui/net_task.c), so nobody needs to restart, and three seconds of
          * a screen saying otherwise only delayed that. */
         list_screen_run();
+        /* Stops the transfer in flight, keeps its bytes and writes the index;
+         * before the network goes away under it. */
+        dl_shutdown();
         vt_thumbs_term();
         vt_netwatch_stop();
     } else {
