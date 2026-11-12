@@ -24,6 +24,9 @@ jobs:
               src/ui/strings_de.c src/ui/strings_en.c src/ui/strings_es.c \
               src/ui/strings_pt.c src/ui/strings_it.c src/ui/strings_fr.c
           /tmp/ts
+          gcc -Isrc -Wall -Wextra -Werror -o /tmp/tks tests/test_kinetic_scroll.c \
+              src/ui/kinetic_scroll.c -lm
+          /tmp/tks
 
   vpk:
     runs-on: ubuntu-latest

@@ -12,7 +12,30 @@
 #define THUMB_H 85
 #define AVATAR_SIZE 48
 
-void draw_video_row(const yt_video_t *video, int y, int selected) {
+/* Row text is clipped to its column, like vt_ui_text_clipped() does — but
+ * that helper turns clipping OFF when it is done, and from then on the rest
+ * of the frame's rows draw unclipped. While the lists only ever scrolled in
+ * whole rows that went unnoticed: the one row hanging off the bottom was
+ * painted over by the hint bar afterwards. Now that a row can sit half
+ * under the tab bar, which is drawn BEFORE the list, its title would be
+ * painted over the tabs. So the column clip here is intersected with the
+ * list band by hand, and the band is put back afterwards.
+ *
+ * Vertically the clip is the whole band rather than the text line: the
+ * line clip in vt_ui_text_clipped() only exists because a rectangle needs a
+ * height, and it has to leave slack for Thai marks anyway. One clip for all
+ * of a row's lines (they share a column) also keeps the cost down — every
+ * vita2d_set_clip_rectangle() redraws the stencil. */
+static void begin_column(int x, int w, int clip_top, int clip_bottom) {
+    vita2d_set_clip_rectangle(x, clip_top, x + w, clip_bottom);
+}
+
+static void end_column(int clip_top, int clip_bottom) {
+    vita2d_set_clip_rectangle(0, clip_top, VT_SCREEN_W, clip_bottom);
+}
+
+void draw_video_row(const yt_video_t *video, int y, int selected,
+                    int clip_top, int clip_bottom) {
     if (selected) {
         vt_ui_rect(8, y, VT_SCREEN_W - 16, ROW_H - 4, VT_COLOR_FOCUS);
         vt_ui_rect(8, y, 4, ROW_H - 4, VT_COLOR_ACCENT);
@@ -35,15 +58,15 @@ void draw_video_row(const yt_video_t *video, int y, int selected) {
     }
     int text_x = tx + THUMB_W + 16;
     int text_w = VT_SCREEN_W - text_x - 24;
-    vt_ui_text_clipped(text_x, y + 10, VT_COLOR_TEXT, 1.0f, text_w,
-                       video->title);
-    vt_ui_text_clipped(text_x, y + 38, VT_COLOR_MUTED, 0.85f, text_w,
-                       video->channel);
-    vt_ui_text_clipped(text_x, y + 60, VT_COLOR_FAINT, 0.85f, text_w,
-                       video->views);
+    begin_column(text_x, text_w, clip_top, clip_bottom);
+    vt_ui_text(text_x, y + 10, VT_COLOR_TEXT, 1.0f, video->title);
+    vt_ui_text(text_x, y + 38, VT_COLOR_MUTED, 0.85f, video->channel);
+    vt_ui_text(text_x, y + 60, VT_COLOR_FAINT, 0.85f, video->views);
+    end_column(clip_top, clip_bottom);
 }
 
-void draw_channel_row(const yt_channel_t *channel, int y, int selected) {
+void draw_channel_row(const yt_channel_t *channel, int y, int selected,
+                      int clip_top, int clip_bottom) {
     if (selected) {
         vt_ui_rect(8, y, VT_SCREEN_W - 16, CHANNEL_ROW_H - 4, VT_COLOR_FOCUS);
         vt_ui_rect(8, y, 4, CHANNEL_ROW_H - 4, VT_COLOR_ACCENT);
@@ -58,8 +81,11 @@ void draw_channel_row(const yt_channel_t *channel, int y, int selected) {
     } else {
         vt_ui_rect(cx, cy, AVATAR_SIZE, AVATAR_SIZE, VT_COLOR_RAISED);
     }
-    vt_ui_text_clipped(cx + AVATAR_SIZE + 16, y + 22, VT_COLOR_TEXT, 1.0f,
-                       VT_SCREEN_W - cx - AVATAR_SIZE - 40, channel->title);
+    int text_x = cx + AVATAR_SIZE + 16;
+    begin_column(text_x, VT_SCREEN_W - cx - AVATAR_SIZE - 40, clip_top,
+                 clip_bottom);
+    vt_ui_text(text_x, y + 22, VT_COLOR_TEXT, 1.0f, channel->title);
+    end_column(clip_top, clip_bottom);
 }
 
 /* Since the home feed also loads signed out (see yt_home_feed), an empty
