@@ -35,6 +35,23 @@ jobs:
           gcc -Isrc -Wall -Wextra -Werror -o /tmp/tdf tests/test_dl_format.c \
               src/ui/dl_format.c
           /tmp/tdf
+          # The download engine against a fake card and a fake server. jansson
+          # is vendored and not ours to make warning-free, so its objects are
+          # built apart, without -Werror.
+          mkdir -p /tmp/js
+          for f in dump error hashtable hashtable_seed load memory pack_unpack \
+                   strbuffer strconv utf value version; do
+            gcc -c -w -DHAVE_CONFIG_H -Iexternal/jansson -o /tmp/js/$f.o external/jansson/$f.c
+          done
+          gcc -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tdl \
+              tests/test_dl_core.c src/dl/dl_core.c src/dl/dl_index.c \
+              src/dl/dl_mp4.c /tmp/js/*.o
+          /tmp/tdl
+          gcc -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+              -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tdl_san \
+              tests/test_dl_core.c src/dl/dl_core.c src/dl/dl_index.c \
+              src/dl/dl_mp4.c /tmp/js/*.o
+          ASAN_OPTIONS=detect_leaks=0 /tmp/tdl_san
 
   vpk:
     runs-on: ubuntu-latest

@@ -68,6 +68,10 @@ add_executable(${PROJECT_NAME}
   src/net/http.c
   src/net/net_retry.c
   src/net/netwatch.c
+  src/dl/dl.c
+  src/dl/dl_core.c
+  src/dl/dl_index.c
+  src/dl/dl_mp4.c
   src/yt/parse.c
   src/yt/innertube.c
   src/yt/oauth.c
