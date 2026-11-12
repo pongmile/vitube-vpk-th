@@ -24,6 +24,8 @@ jobs:
               src/ui/strings_de.c src/ui/strings_en.c src/ui/strings_es.c \
               src/ui/strings_pt.c src/ui/strings_it.c src/ui/strings_fr.c
           /tmp/ts
+          gcc -Isrc -Wall -Werror -o /tmp/tnr tests/test_net_retry.c src/net/net_retry.c
+          /tmp/tnr
 
   vpk:
     runs-on: ubuntu-latest

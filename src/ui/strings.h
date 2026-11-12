@@ -43,9 +43,14 @@ typedef enum {
     /* --- app-wide ---------------------------------------------------- */
     S_CANCEL_HINT,
     S_CANCELLING,
-    S_NO_NETWORK,
-    S_CONNECT_WIFI,
     S_NET_INIT_FAILED,
+    /* The reconnect screen of src/ui/net_task.c: a load that failed because
+     * the network was gone (typically just after a wake from suspend) and
+     * is being retried rather than reported. */
+    S_RECONNECTING,
+    S_WAITING_FOR_WIFI,
+    S_RETRY_IN,
+    S_RETRY_ATTEMPT,
 
     /* --- tabs and the shell ------------------------------------------ */
     S_TAB_HOME,

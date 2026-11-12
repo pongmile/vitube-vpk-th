@@ -14,6 +14,8 @@
 #include <psp2/kernel/processmgr.h>
 
 #include "app.h"
+#include "net/netwatch.h"
+#include "ui/net_task.h"
 #include "ui/player_screen.h"
 #include "ui/rows_view.h"
 #include "store.h"
@@ -96,6 +98,9 @@ static char g_search_query[256];
  * rewrites when you subscribe) can move under it. */
 static yt_channel_t g_channel;
 static volatile int g_fetch_cancel;
+/* vt_netwatch_generation() as of the last Start load; see the empty-Start
+ * retry in list_screen_run(). */
+static unsigned g_home_net_generation;
 
 static void video_list_absorb(VideoListState *list, const yt_video_list_t *page) {
     for (int i = 0; i < page->count && list->count < ITEMS_MAX; i++) {
@@ -150,8 +155,8 @@ static int search_task(void *opaque) {
 static void run_search(const char *query) {
     g_fetch_cancel = 0;
     SearchTask task = { query, NULL, &g_fetch_cancel, {0} };
-    int ret = vt_ui_run_task(vt_str(S_SEARCHING), search_task, &task,
-                             &g_fetch_cancel);
+    int ret = vt_ui_run_net_task(vt_str(S_SEARCHING), search_task, &task,
+                                 &g_fetch_cancel);
     g_search.loaded = 1;
     if (g_fetch_cancel) return;
     if (ret < 0) {
@@ -183,8 +188,8 @@ static void load_more_search(void) {
     if (!g_search.continuation[0] || g_search.count >= ITEMS_MAX) return;
     g_fetch_cancel = 0;
     SearchTask task = { NULL, g_search.continuation, &g_fetch_cancel, {0} };
-    int ret = vt_ui_run_task(vt_str(S_LOADING_MORE), search_task, &task,
-                             &g_fetch_cancel);
+    int ret = vt_ui_run_net_task(vt_str(S_LOADING_MORE), search_task, &task,
+                                 &g_fetch_cancel);
     g_search.continuation[0] = '\0';
     if (ret == 0 && !g_fetch_cancel) video_list_absorb(&g_search, &task.page);
 }
@@ -202,8 +207,8 @@ static int home_fetch_task(void *opaque) {
 static void run_home(void) {
     g_fetch_cancel = 0;
     SimpleFetchTask task = { &g_fetch_cancel, {0} };
-    int ret = vt_ui_run_task(vt_str(S_LOADING_HOME), home_fetch_task, &task,
-                             &g_fetch_cancel);
+    int ret = vt_ui_run_net_task(vt_str(S_LOADING_HOME), home_fetch_task,
+                                 &task, &g_fetch_cancel);
     /* Only a fetch that brought videos counts as loaded. A failed or
      * cancelled one (Wi-Fi not associated yet at launch, a timeout, Circle
      * on the spinner) used to latch loaded=1 too, and since !loaded is the
@@ -211,6 +216,9 @@ static void run_home(void) {
      * of the session. An empty 200 is a failure as well: it_list_call
      * records it in yt_last_error(). */
     g_home.loaded = !g_fetch_cancel && ret == 0 && task.page.count > 0;
+    /* Whatever woke or reconnected during this load has been tried with
+     * already; only a later one is a reason to try again by itself. */
+    g_home_net_generation = vt_netwatch_generation();
     if (g_fetch_cancel) return;
     g_home.count = 0;
     g_home.cursor = 0;
@@ -230,8 +238,8 @@ static int abos_feed_fetch_task(void *opaque) {
 static void run_abos_feed(void) {
     g_fetch_cancel = 0;
     SimpleFetchTask task = { &g_fetch_cancel, {0} };
-    int ret = vt_ui_run_task(vt_str(S_LOADING_NEW_VIDEOS), abos_feed_fetch_task,
-                             &task, &g_fetch_cancel);
+    int ret = vt_ui_run_net_task(vt_str(S_LOADING_NEW_VIDEOS),
+                                 abos_feed_fetch_task, &task, &g_fetch_cancel);
     /* A transport failure or a cancel leaves the list unloaded so the next
      * visit retries; "not signed in" and a genuinely empty feed are answers
      * and stay loaded, or the toast would repeat on every tab pass. */
@@ -330,8 +338,8 @@ static void sort_channels(void) {
 static void run_channels(void) {
     g_fetch_cancel = 0;
     ChannelsFetchTask task = { &g_fetch_cancel, {0} };
-    int ret = vt_ui_run_task(vt_str(S_LOADING_CHANNELS), channels_fetch_task,
-                             &task, &g_fetch_cancel);
+    int ret = vt_ui_run_net_task(vt_str(S_LOADING_CHANNELS),
+                                 channels_fetch_task, &task, &g_fetch_cancel);
     /* Same rule as run_abos_feed: only a transport failure or a cancel is
      * worth retrying on the next visit. */
     g_channels.loaded = !g_fetch_cancel && ret >= 0;
@@ -376,8 +384,8 @@ static int channel_videos_task(void *opaque) {
 static void run_channel_detail(const yt_channel_t *channel) {
     g_fetch_cancel = 0;
     ChannelVideosTask task = { channel->channel_id, &g_fetch_cancel, {0}, "" };
-    int ret = vt_ui_run_task(vt_str(S_LOADING_CHANNEL_VIDEOS), channel_videos_task,
-                             &task, &g_fetch_cancel);
+    int ret = vt_ui_run_net_task(vt_str(S_LOADING_CHANNEL_VIDEOS),
+                                 channel_videos_task, &task, &g_fetch_cancel);
     if (g_fetch_cancel) return;
     if (ret < 0 || task.page.count == 0) {
         vt_ui_toast(vt_str(S_CHANNEL_UNAVAILABLE), yt_last_error(), 150);
@@ -678,6 +686,23 @@ void list_screen_run(void) {
         if (g_view[g_tab] == VIEW_HISTORY &&
             g_history_revision != vt_store_revision())
             load_history();
+
+        /* The empty Start screen is what a load leaves behind once
+         * net_task.c's retries ran out (or Circle stopped them). It used to
+         * stay there until someone read the hint and pressed Cross; now the
+         * next wake from suspend or the network coming back loads it again
+         * by itself — through the same spinner, so it is visible. */
+        if (vt_netwatch_generation() != g_home_net_generation) {
+            g_home_net_generation = vt_netwatch_generation();
+            if (g_tab == TAB_HOME && g_view[TAB_HOME] == VIEW_VIDEOS &&
+                g_home.count == 0) {
+                run_home();
+                resync_input(&previous);
+                /* `pressed` is from before the load; a Cross in it would
+                 * play the first row of the list that just arrived. */
+                continue;
+            }
+        }
 
         unsigned direction = vt_nav_repeat(&nav, pressed, held, ctrl.lx, ctrl.ly);
         ChannelListState *channels = active_channel_list();

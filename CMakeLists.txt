@@ -66,6 +66,8 @@ add_executable(${PROJECT_NAME}
   src/log.c
   src/store.c
   src/net/http.c
+  src/net/net_retry.c
+  src/net/netwatch.c
   src/yt/parse.c
   src/yt/innertube.c
   src/yt/oauth.c
@@ -81,6 +83,7 @@ add_executable(${PROJECT_NAME}
   src/ui/thumbs.c
   src/ui/rows_view.c
   src/ui/list_screen.c
+  src/ui/net_task.c
   src/ui/player_screen.c
   src/ui/player_quality_switch.c
   src/ui/player_hud.c

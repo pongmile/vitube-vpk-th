@@ -667,24 +667,32 @@ int vt_ui_run_task(const char *label, VtTaskFn fn, void *arg,
             *cancel_flag = 1;
             cancelled = 1;
         }
-        vita2d_start_drawing();
-        vita2d_clear_screen();
-        const char *text = cancelled ? vt_str(S_CANCELLING) : label;
-        int w = vt_ui_text_width(1.1f, text);
-        vt_ui_text((VT_SCREEN_W - w) / 2, 240, VT_COLOR_TEXT, 1.1f, text);
-        /* simple animated dots bar */
-        int cx = VT_SCREEN_W / 2 - 60 + (int)(frame % 60) * 2;
-        vt_ui_rect(VT_SCREEN_W / 2 - 60, 290, 120, 4, VT_COLOR_RAISED);
-        vt_ui_rect(cx, 290, 16, 4, VT_COLOR_ACCENT);
-        if (!cancelled && cancel_flag)
-            vt_ui_hint_bar(vt_str(S_CANCEL_HINT));
-        vita2d_end_drawing();
-        vita2d_wait_rendering_done();
-        vita2d_swap_buffers();
+        vt_ui_busy_frame(cancelled ? vt_str(S_CANCELLING) : label, NULL,
+                         frame, !cancelled && cancel_flag);
         frame++;
     }
     pthread_join(thread, NULL);
     return task.result;
+}
+
+void vt_ui_busy_frame(const char *label, const char *detail, unsigned frame,
+                      int cancel_hint) {
+    vita2d_start_drawing();
+    vita2d_clear_screen();
+    int w = vt_ui_text_width(1.1f, label);
+    vt_ui_text((VT_SCREEN_W - w) / 2, 240, VT_COLOR_TEXT, 1.1f, label);
+    /* simple animated dots bar */
+    int cx = VT_SCREEN_W / 2 - 60 + (int)(frame % 60) * 2;
+    vt_ui_rect(VT_SCREEN_W / 2 - 60, 290, 120, 4, VT_COLOR_RAISED);
+    vt_ui_rect(cx, 290, 16, 4, VT_COLOR_ACCENT);
+    if (detail && detail[0]) {
+        int dw = vt_ui_text_width(0.9f, detail);
+        vt_ui_text((VT_SCREEN_W - dw) / 2, 312, VT_COLOR_MUTED, 0.9f, detail);
+    }
+    if (cancel_hint) vt_ui_hint_bar(vt_str(S_CANCEL_HINT));
+    vita2d_end_drawing();
+    vita2d_wait_rendering_done();
+    vita2d_swap_buffers();
 }
 
 void vt_ui_toast(const char *line1, const char *line2, int frames) {

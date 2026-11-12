@@ -10,6 +10,7 @@
 #include "store.h"
 #include "media/vita_decoder.h"
 #include "net/http.h"
+#include "net/netwatch.h"
 #include "ui/list_screen.h"
 #include "ui/strings.h"
 #include "ui/thumbs.h"
@@ -63,13 +64,18 @@ int main(void) {
 
     int network_ready = http_init() == 0;
     if (network_ready) {
+        vt_netwatch_start();
         yt_oauth_load();
         vt_thumbs_init();
         vt_decoder_init();
-        if (!http_connected())
-            vt_ui_toast(vt_str(S_NO_NETWORK), vt_str(S_CONNECT_WIFI), 180);
+        /* No "No network — connect to Wi-Fi and restart" toast here any
+         * more: the first Start load now shows its own "Waiting for Wi-Fi"
+         * screen and goes ahead by itself once the console has associated
+         * (ui/net_task.c), so nobody needs to restart, and three seconds of
+         * a screen saying otherwise only delayed that. */
         list_screen_run();
         vt_thumbs_term();
+        vt_netwatch_stop();
     } else {
         vt_ui_toast(vt_str(S_NET_INIT_FAILED), NULL, 240);
     }
