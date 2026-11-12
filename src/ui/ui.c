@@ -535,6 +535,41 @@ void vt_ui_hint_bar(const char *hint) {
 
 #define MENU_ROW_H 44
 
+/* Where the box of a menu sits. One function for drawing and for
+ * vt_ui_menu_hit(): a tap is tested against the very rectangles that were
+ * painted, not against a second copy of the arithmetic that could drift. */
+static void menu_box(const char *title, const VtMenuItem *items, int count,
+                     int *x, int *y, int *w, int *h) {
+    int content_w = vt_ui_text_width(0.9f, title);
+    for (int i = 0; i < count; i++) {
+        int iw = vt_ui_text_width(1.0f, items[i].label);
+        if (items[i].value) iw += 24 + vt_ui_text_width(1.0f, items[i].value);
+        if (items[i].marked) iw += 28;
+        if (iw > content_w) content_w = iw;
+    }
+    int box_w = content_w + 80;
+    if (box_w < 300) box_w = 300;
+    if (box_w > VT_SCREEN_W - 80) box_w = VT_SCREEN_W - 80;
+    int box_h = 46 + count * MENU_ROW_H;
+    *w = box_w;
+    *h = box_h;
+    *x = (VT_SCREEN_W - box_w) / 2;
+    *y = (VT_SCREEN_H - box_h) / 2;
+}
+
+int vt_ui_menu_hit(const char *title, const VtMenuItem *items, int count,
+                   int x, int y) {
+    int box_x, box_y, box_w, box_h;
+    menu_box(title, items, count, &box_x, &box_y, &box_w, &box_h);
+    if (x < box_x || x >= box_x + box_w || y < box_y || y >= box_y + box_h)
+        return VT_MENU_HIT_OUTSIDE;
+    /* The whole 44 px row counts, not just the 38 px highlight: the gap
+     * between two highlights is not a place a finger can be asked to avoid. */
+    if (y < box_y + 44) return VT_MENU_HIT_NONE;
+    int row = (y - (box_y + 44)) / MENU_ROW_H;
+    return row < count ? row : VT_MENU_HIT_NONE;
+}
+
 void vt_ui_menu_draw(const char *title, const VtMenuItem *items, int count,
                      int cursor) {
     /* A modal is full-screen by definition; the caller may still have the
@@ -542,19 +577,8 @@ void vt_ui_menu_draw(const char *title, const VtMenuItem *items, int count,
      * top of the Region picker and left the header undimmed. */
     vita2d_disable_clipping();
     vt_ui_rect(0, 0, VT_SCREEN_W, VT_SCREEN_H, RGBA8(0, 0, 0, 160));
-    int content_w = vt_ui_text_width(0.9f, title);
-    for (int i = 0; i < count; i++) {
-        int w = vt_ui_text_width(1.0f, items[i].label);
-        if (items[i].value) w += 24 + vt_ui_text_width(1.0f, items[i].value);
-        if (items[i].marked) w += 28;
-        if (w > content_w) content_w = w;
-    }
-    int box_w = content_w + 80;
-    if (box_w < 300) box_w = 300;
-    if (box_w > VT_SCREEN_W - 80) box_w = VT_SCREEN_W - 80;
-    int box_h = 46 + count * MENU_ROW_H;
-    int box_x = (VT_SCREEN_W - box_w) / 2;
-    int box_y = (VT_SCREEN_H - box_h) / 2;
+    int box_x, box_y, box_w, box_h;
+    menu_box(title, items, count, &box_x, &box_y, &box_w, &box_h);
     vt_ui_rect(box_x, box_y, box_w, box_h, VT_COLOR_SURFACE);
     vt_ui_text(box_x + 20, box_y + 12, VT_COLOR_MUTED, 0.9f, title);
     for (int i = 0; i < count; i++) {
@@ -578,12 +602,42 @@ void vt_ui_menu_draw(const char *title, const VtMenuItem *items, int count,
     }
 }
 
-int vt_ui_tab_bar(const char *const *tabs, int count, int active) {
+/* A count bubble sits after the label (the Downloads tab's active items).
+ * It is part of the tab's width, so the bubble is inside the highlight and
+ * inside the touch target instead of hanging off the corner. One digit is a
+ * circle, "9+" a short pill. */
+#define TAB_BADGE_GAP 6
+static int badge_width(int badge) {
+    return badge <= 0 ? 0 : (badge > 9 ? 26 : 16);
+}
+
+static int tab_width(const char *label, int badge) {
+    int bw = badge_width(badge);
+    return vt_ui_text_width(0.95f, label) + 28 + (bw ? TAB_BADGE_GAP + bw : 0);
+}
+
+static void draw_badge(int x, int cy, int badge) {
+    int bw = badge_width(badge);
+    unsigned int col = VT_COLOR_ACCENT;
+    vita2d_draw_fill_circle((float)(x + 8), (float)cy, 8.0f, col);
+    if (bw > 16) {
+        vita2d_draw_fill_circle((float)(x + bw - 8), (float)cy, 8.0f, col);
+        vt_ui_rect(x + 8, cy - 8, bw - 16, 16, col);
+    }
+    char text[4];
+    snprintf(text, sizeof text, badge > 9 ? "9+" : "%d", badge);
+    int tw = vt_ui_text_width(0.75f, text);
+    vt_ui_text(x + (bw - tw) / 2, cy - 8, VT_COLOR_TEXT, 0.75f, text);
+}
+
+int vt_ui_tab_bar_badged(const char *const *tabs, const int *badges, int count,
+                         int active) {
     vt_ui_rect(0, TAB_BAR_Y, VT_SCREEN_W, TAB_BAR_H, VT_COLOR_BG);
     vt_ui_rect(0, TAB_BAR_Y + TAB_BAR_H - 1, VT_SCREEN_W, 1, VT_COLOR_BORDER);
     int x = 16;
     for (int i = 0; i < count; i++) {
-        int w = vt_ui_text_width(0.95f, tabs[i]) + 28;
+        int badge = badges ? badges[i] : 0;
+        int w = tab_width(tabs[i], badge);
         if (i == active) {
             vt_ui_rect(x, TAB_BAR_Y + 4, w, TAB_BAR_H - 8, VT_COLOR_RAISED);
             vt_ui_rect(x, TAB_BAR_Y + TAB_BAR_H - 3, w, 3, VT_COLOR_ACCENT);
@@ -591,6 +645,10 @@ int vt_ui_tab_bar(const char *const *tabs, int count, int active) {
         vt_ui_text(x + 14, TAB_BAR_Y + 7, i == active ? VT_COLOR_TEXT
                                                        : VT_COLOR_MUTED,
                    0.95f, tabs[i]);
+        if (badge > 0)
+            draw_badge(x + 14 + vt_ui_text_width(0.95f, tabs[i]) +
+                           TAB_BADGE_GAP,
+                       TAB_BAR_Y + TAB_BAR_H / 2, badge);
         x += w + 8;
     }
     const char *arrows = "L1 \xe2\x97\x84 \xe2\x96\xba R1";
@@ -598,6 +656,27 @@ int vt_ui_tab_bar(const char *const *tabs, int count, int active) {
     vt_ui_text(VT_SCREEN_W - 16 - aw, TAB_BAR_Y + 9, VT_COLOR_FAINT, 0.85f,
               arrows);
     return TAB_BAR_H;
+}
+
+int vt_ui_tab_bar(const char *const *tabs, int count, int active) {
+    return vt_ui_tab_bar_badged(tabs, NULL, count, active);
+}
+
+int vt_ui_tab_hit(const char *const *tabs, const int *badges, int count, int x,
+                  int y) {
+    if (y < TAB_BAR_Y || y >= TAB_BAR_Y + TAB_BAR_H) return -1;
+    int left = 16;
+    for (int i = 0; i < count; i++) {
+        int w = tab_width(tabs[i], badges ? badges[i] : 0);
+        /* Each tab owns half of the 8 px gap on either side, and the first
+         * one the margin to the screen edge: a tab bar this thin is hard
+         * enough to hit without dead strips in it. */
+        int lo = i == 0 ? 0 : left - 4;
+        int hi = left + w + 4;
+        if (x >= lo && x < hi) return i;
+        left += w + 8;
+    }
+    return -1;
 }
 
 unsigned int vt_nav_repeat(VtNavRepeat *nav, unsigned int pressed,
