@@ -157,9 +157,13 @@ void draw_hud(const yt_video_t *video, const VtDecoderPlayerStatus *status,
             snprintf(measured, sizeof measured, "%up", tier);
         shown = measured;
     }
+    /* The (△) says where the quality menu is, so it is only there when the
+     * menu is: a Short, a live stream or a downloaded file has no such menu
+     * and the legend below already leaves the key out for them. */
     char badge[64];
-    snprintf(badge, sizeof badge, "%s \xc2\xb7 %s (\xe2\x96\xb3) \xc2\xb7 Vol %d%%",
-             backend_name, shown, volume);
+    snprintf(badge, sizeof badge, "%s \xc2\xb7 %s%s \xc2\xb7 Vol %d%%",
+             backend_name, shown, quality_pickable ? " (\xe2\x96\xb3)" : "",
+             volume);
     float badge_scale = 0.85f;
     int bw = vt_ui_text_width(badge_scale, badge);
     if (bw > 280) { badge_scale = 0.7f; bw = vt_ui_text_width(badge_scale, badge); }

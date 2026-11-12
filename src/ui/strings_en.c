@@ -175,4 +175,9 @@ const char *const vt_strings_en[VT_STR_COUNT] = {
     [S_ERR_AUTH_REFRESH] = "Could not renew the sign-in",
     [S_ERR_NO_STREAM_DATA] = "no stream data",
     [S_SIGNIN_DENIED] = "Sign-in was denied on the phone",
+
+    /* --- offline playback --- */
+    [S_PLAYER_OFFLINE] = "Offline",
+    [S_PLAYER_DL_DAMAGED] = "Download damaged",
+    [S_PLAYER_DL_DAMAGED_HINT] = "Please download it again",
 };

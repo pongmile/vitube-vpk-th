@@ -176,4 +176,9 @@ const char *const vt_strings_de[VT_STR_COUNT] = {
     [S_ERR_AUTH_REFRESH] = "Anmeldung konnte nicht erneuert werden",
     [S_ERR_NO_STREAM_DATA] = "keine Streamdaten",
     [S_SIGNIN_DENIED] = "Anmeldung auf dem Handy abgelehnt",
+
+    /* --- offline playback --- */
+    [S_PLAYER_OFFLINE] = "Offline",
+    [S_PLAYER_DL_DAMAGED] = "Download beschädigt",
+    [S_PLAYER_DL_DAMAGED_HINT] = "Bitte erneut herunterladen",
 };

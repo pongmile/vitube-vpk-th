@@ -212,6 +212,19 @@ typedef enum {
     S_ERR_NO_STREAM_DATA,
     S_SIGNIN_DENIED,
 
+    /* --- offline playback (player_screen.c) ---------------------------- */
+    /* The tag in the player's top-right badge while a downloaded file plays,
+     * in the place of the decoder name: the viewer should be able to tell
+     * that nothing is being streamed. Kept short, the badge is a single line
+     * that shrinks to fit. */
+    S_PLAYER_OFFLINE,
+    /* Toast when a download will not play after all (it would not open, or the
+     * decoder gave up in its first seconds): the title, and what to do about
+     * it. The entry is back on the Downloads list as failed. */
+    S_PLAYER_DL_DAMAGED,
+    S_PLAYER_DL_DAMAGED_HINT,
+    /* --- end of offline playback ---------------------------------------- */
+
     VT_STR_COUNT
 } VtStringId;
 

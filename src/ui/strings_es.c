@@ -181,4 +181,9 @@ const char *const vt_strings_es[VT_STR_COUNT] = {
     [S_ERR_AUTH_REFRESH] = "No se ha podido renovar la sesión",
     [S_ERR_NO_STREAM_DATA] = "sin datos de stream",
     [S_SIGNIN_DENIED] = "Inicio de sesión rechazado en el móvil",
+
+    /* --- offline playback --- */
+    [S_PLAYER_OFFLINE] = "Sin conexión",
+    [S_PLAYER_DL_DAMAGED] = "Descarga dañada",
+    [S_PLAYER_DL_DAMAGED_HINT] = "Descárgalo de nuevo",
 };

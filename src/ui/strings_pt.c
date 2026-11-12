@@ -182,4 +182,9 @@ const char *const vt_strings_pt[VT_STR_COUNT] = {
     [S_ERR_AUTH_REFRESH] = "Não foi possível renovar o login",
     [S_ERR_NO_STREAM_DATA] = "sem dados de stream",
     [S_SIGNIN_DENIED] = "Login recusado no celular",
+
+    /* --- offline playback --- */
+    [S_PLAYER_OFFLINE] = "Offline",
+    [S_PLAYER_DL_DAMAGED] = "Download danificado",
+    [S_PLAYER_DL_DAMAGED_HINT] = "Baixe novamente",
 };

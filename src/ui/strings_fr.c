@@ -180,4 +180,9 @@ const char *const vt_strings_fr[VT_STR_COUNT] = {
     [S_ERR_AUTH_REFRESH] = "Impossible de renouveler la connexion",
     [S_ERR_NO_STREAM_DATA] = "aucune donnée de flux",
     [S_SIGNIN_DENIED] = "Connexion refusée sur le téléphone",
+
+    /* --- offline playback --- */
+    [S_PLAYER_OFFLINE] = "Hors ligne",
+    [S_PLAYER_DL_DAMAGED] = "Téléchargement endommagé",
+    [S_PLAYER_DL_DAMAGED_HINT] = "Veuillez le télécharger à nouveau",
 };

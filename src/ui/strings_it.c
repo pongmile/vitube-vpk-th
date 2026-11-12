@@ -180,4 +180,9 @@ const char *const vt_strings_it[VT_STR_COUNT] = {
     [S_ERR_AUTH_REFRESH] = "Impossibile rinnovare l'accesso",
     [S_ERR_NO_STREAM_DATA] = "nessun dato di stream",
     [S_SIGNIN_DENIED] = "Accesso rifiutato sul telefono",
+
+    /* --- offline playback --- */
+    [S_PLAYER_OFFLINE] = "Offline",
+    [S_PLAYER_DL_DAMAGED] = "Download danneggiato",
+    [S_PLAYER_DL_DAMAGED_HINT] = "Scaricalo di nuovo",
 };
