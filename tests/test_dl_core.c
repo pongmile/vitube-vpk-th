@@ -110,8 +110,22 @@ typedef struct World {
     int req_status[256];
     char req_id[256][12];
     int thumb_fetches, thumb_status;
-    unsigned char thumb[64];
+    unsigned char *thumb;
     int64_t thumb_len;
+    int64_t thumb_cut;        /* >= 0: deliver only this much of the thumbnail */
+    int hide_thumb_clen;
+    char thumb_req[160];
+    char live_id[12];         /* this video resolves as a live stream */
+    int flag_stale;           /* connected flag says no, the network works */
+    Hook resolve_hook;        /* one shot, inside the next resolve */
+    Hook open_read_hook;      /* one shot, when a .part is opened for reading */
+    int64_t max_write, max_read;
+    int64_t max_part;         /* biggest a .part ever was */
+    int64_t max_src;          /* longest video ever served */
+    int thumb_fail_transport;
+    char watch[12];           /* count .mp4 mutations of this video only */
+    int mp4_mutations;        /* creations, renames and removals of its .mp4 */
+    long fs_ops, net_ops;
 } World;
 
 static void world_check_path(World *w, const char *path) {
@@ -160,9 +174,15 @@ static int64_t used_by_files(World *w) {
 }
 
 #define FS_ENTER(w, path) do { \
+    (w)->fs_ops++; \
     if ((w)->lock_depth) (w)->lock_violations++; \
     if (path) world_check_path((w), (path)); \
 } while (0)
+
+static void note_mp4(World *w, const char *path) {
+    if (strstr(path, ".mp4") && (!w->watch[0] || strstr(path, w->watch)))
+        w->mp4_mutations++;
+}
 
 /* A crash: from now on nothing the engine does reaches the card. */
 static int crashed(World *w) {
@@ -182,8 +202,15 @@ static int f_open(void *u, const char *path, int mode) {
     World *w = u;
     FS_ENTER(w, path);
     FFile *f = ffind(w, path);
+    if (!(mode & DL_FS_WRITE) && f && strstr(path, ".part") && w->open_read_hook) {
+        Hook h = w->open_read_hook;
+        w->open_read_hook = NULL;
+        h(w);
+        f = ffind(w, path); /* it may have been deleted from under us */
+    }
     if (mode & DL_FS_WRITE) {
         if (crashed(w)) return DL_FS_IO;
+        note_mp4(w, path);
         if (!f) f = fcreate(w, path);
         if (mode & DL_FS_TRUNC) {
             f->size = 0;
@@ -214,6 +241,7 @@ static int64_t f_pread(void *u, int fd, void *buf, size_t len, int64_t off) {
     FS_ENTER(w, NULL);
     if (fd < 0 || fd >= 16 || !w->fds[fd].file) return DL_FS_IO;
     FFile *f = &w->files[w->fds[fd].mode];
+    if ((int64_t)len > w->max_read) w->max_read = (int64_t)len;
     if (off >= f->size) return 0;
     int64_t n = f->size - off;
     if (n > (int64_t)len) n = (int64_t)len;
@@ -228,6 +256,7 @@ static int64_t f_pwrite(void *u, int fd, const void *buf, size_t len,
     if (fd < 0 || fd >= 16 || !w->fds[fd].file) return DL_FS_IO;
     if (crashed(w)) return DL_FS_IO;
     FFile *f = &w->files[w->fds[fd].mode];
+    if ((int64_t)len > w->max_write) w->max_write = (int64_t)len;
     if (off > f->size) w->hole_writes++;
     int64_t n = (int64_t)len;
     int budgeted = w->write_budget >= 0 && strstr(f->path, ".part") != NULL;
@@ -247,6 +276,7 @@ static int64_t f_pwrite(void *u, int fd, const void *buf, size_t len,
     if (off + n > f->size) {
         if (budgeted) w->write_budget -= off + n - f->size;
         f->size = off + n;
+        if (strstr(f->path, ".part") && f->size > w->max_part) w->max_part = f->size;
     }
     return n;
 }
@@ -273,6 +303,8 @@ static int f_rename(void *u, const char *from, const char *to) {
     if (crashed(w)) return DL_FS_IO;
     FFile *f = ffind(w, from);
     if (!f) return DL_FS_IO;
+    note_mp4(w, from);
+    note_mp4(w, to);
     if (ffind(w, to)) {
         w->rename_over_existing++;
         return DL_FS_IO;
@@ -292,6 +324,7 @@ static int f_unlink(void *u, const char *path) {
     FFile *f = ffind(w, path);
     if (f) {
         if (strstr(path, ".part")) w->part_wipes++;
+        note_mp4(w, path);
         fremove(w, f);
     }
     return 0;
@@ -320,6 +353,18 @@ static void f_unlock(void *u) {
 
 static uint64_t f_now(void *u) { return ((World *)u)->now; }
 static int f_connected(void *u) { return ((World *)u)->connected; }
+
+/* A minimal JPEG: SOI, filler, EOI. */
+static void set_thumb(World *w, int64_t len) {
+    free(w->thumb);
+    w->thumb = malloc((size_t)len);
+    memset(w->thumb, 0x55, (size_t)len);
+    w->thumb[0] = 0xFF;
+    w->thumb[1] = 0xD8;
+    w->thumb[len - 2] = 0xFF;
+    w->thumb[len - 1] = 0xD9;
+    w->thumb_len = len;
+}
 static unsigned f_gen(void *u) { return ((World *)u)->gen; }
 
 static void f_log(void *u, const char *line) {
@@ -333,13 +378,19 @@ static int f_resolve(void *u, const char *id, volatile int *cancel,
     World *w = u;
     if (w->lock_depth) w->lock_violations++;
     w->resolve_calls++;
+    w->net_ops++;
     if (*cancel) return DL_NET_CANCELLED;
-    if (!w->connected) return DL_NET_TRANSPORT;
+    if (!w->connected && !w->flag_stale) return DL_NET_TRANSPORT;
+    if (w->resolve_hook) {
+        Hook h = w->resolve_hook;
+        w->resolve_hook = NULL;
+        h(w);
+    }
     if (w->resolve_result) return w->resolve_result;
     memset(out, 0, sizeof *out);
     snprintf(out->video_id, sizeof out->video_id, "%s", id);
     snprintf(out->playability, sizeof out->playability, "%s", w->playability);
-    out->is_live = w->is_live;
+    out->is_live = w->is_live || strcmp(id, w->live_id) == 0;
     out->format_count = w->fmt_count;
     for (int i = 0; i < w->fmt_count; i++) {
         out->formats[i].itag = w->fmt_itag[i];
@@ -356,16 +407,26 @@ static int f_fetch(void *u, const char *url, int64_t first, int64_t last,
                    const DlSink *sink, volatile int *cancel) {
     World *w = u;
     if (w->lock_depth) w->lock_violations++;
-    if (!w->connected) return DL_NET_TRANSPORT;
+    w->net_ops++;
+    if (!w->connected && !w->flag_stale) return DL_NET_TRANSPORT;
 
-    if (strstr(url, "thumb")) {
+    if (strstr(url, "/vi/")) {
         w->thumb_fetches++;
+        if (w->thumb_fail_transport) return DL_NET_TRANSPORT;
+        snprintf(w->thumb_req, sizeof w->thumb_req, "%s", url);
         if (w->thumb_status != 200) {
             if (sink->headers(sink->ctx, w->thumb_status, 0, "")) return DL_NET_ABORTED;
             return DL_NET_OK;
         }
-        if (sink->headers(sink->ctx, 200, w->thumb_len, "")) return DL_NET_ABORTED;
-        if (sink->data(sink->ctx, w->thumb, (size_t)w->thumb_len)) return DL_NET_ABORTED;
+        if (sink->headers(sink->ctx, 200, w->hide_thumb_clen ? -1 : w->thumb_len, ""))
+            return DL_NET_ABORTED;
+        int64_t send = w->thumb_len;
+        if (w->thumb_cut >= 0 && w->thumb_cut < send) send = w->thumb_cut;
+        for (int64_t at = 0; at < send;) {
+            int64_t k = send - at > 8192 ? 8192 : send - at;
+            if (sink->data(sink->ctx, w->thumb + at, (size_t)k)) return DL_NET_ABORTED;
+            at += k;
+        }
         return DL_NET_OK;
     }
 
@@ -445,6 +506,7 @@ static void make_source(World *w, int64_t len, unsigned seed, int with_moov) {
     free(w->src);
     w->src = malloc((size_t)len);
     w->src_len = len;
+    if (len > w->max_src) w->max_src = len;
     unsigned x = seed * 2654435761u + 1;
     for (int64_t i = 0; i < len; i++) {
         x = x * 1664525u + 1013904223u;
@@ -486,10 +548,8 @@ static World *world_new(void) {
     w->drop_after = -1;
     w->hook_at = -1;
     w->thumb_status = 200;
-    w->thumb_len = 40;
-    memset(w->thumb, 0x55, sizeof w->thumb);
-    w->thumb[0] = 0xFF;
-    w->thumb[1] = 0xD8;
+    w->thumb_cut = -1;
+    set_thumb(w, 40);
     make_source(w, SRC_LEN, 1, 1);
     w->fmt_len[0] = SRC_LEN;
     return w;
@@ -526,7 +586,14 @@ static void world_free(World *w) {
     CHECK(w->bad_path == 0, "%d paths outside the downloads directory", w->bad_path);
     CHECK(w->hole_writes == 0, "%d writes past the end of a file", w->hole_writes);
     CHECK(w->rename_over_existing == 0, "rename relied on replacing a file");
+    CHECK(w->max_part <= w->max_src, "a .part grew to %lld bytes, the video is at most %lld",
+          (long long)w->max_part, (long long)w->max_src);
+    CHECK(w->max_write <= DL_WBUF_BYTES, "a write of %lld bytes under the I/O lock",
+          (long long)w->max_write);
+    CHECK(w->max_read <= DL_WBUF_BYTES, "a read of %lld bytes under the I/O lock",
+          (long long)w->max_read);
     for (int i = 0; i < w->nfiles; i++) free(w->files[i].data);
+    free(w->thumb);
     free(w->src);
     free(w->core);
     free(w);
@@ -716,6 +783,8 @@ static void test_fresh_download(void) {
     CHECK(file_of(w, ID_A, "jpg") != NULL, "thumbnail saved");
     CHECK(file_of(w, ID_A, "jpg.tmp") == NULL, "no thumbnail tmp left");
     CHECK(w->thumb_fetches == 1, "thumbnail fetched once (%d)", w->thumb_fetches);
+    CHECK(strcmp(w->thumb_req, "https://i.ytimg.com/vi/" ID_A "/mqdefault.jpg") == 0,
+          "the 16:9 thumbnail, not the list's 4:3 one: %s", w->thumb_req);
     CHECK(w->nreq == 3, "three ranged requests (%d)", w->nreq);
     CHECK(w->req_first[0] == 0 && w->req_last[0] == 4 * MIB - 1, "first range");
     CHECK(w->req_first[1] == 4 * MIB && w->req_last[1] == 8 * MIB - 1, "second range");
@@ -1541,6 +1610,10 @@ static void test_queue_order(void) {
         if (k >= 0 && k < 3 && first_of[k] < 0) first_of[k] = i;
     }
     CHECK(first_of[2] < first_of[0] && first_of[0] < first_of[1], "C, A, B in resume order");
+    DlItem order[4];
+    CHECK(dl_core_snapshot(w->core, order, 4) == 3 && strcmp(order[0].video_id, ID_A) == 0 &&
+              strcmp(order[1].video_id, ID_B) == 0 && strcmp(order[2].video_id, ID_C) == 0,
+          "the list stays oldest first whatever order the queue runs in");
     world_free(w);
 
     w = world_new();
@@ -1970,39 +2043,82 @@ static void test_atomic_index(void) {
 }
 
 static void test_thumbnails(void) {
+    char path[128];
+    yt_video_t v = video(ID_A, "A");
+    snprintf(v.thumb_url, sizeof v.thumb_url, "https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg?sqp=x");
+
     /* A failing thumbnail never fails the download, and is not hammered. */
     World *w = world_new();
     core_new(w);
     w->thumb_status = 404;
-    yt_video_t v = video(ID_A, "A");
-    snprintf(v.thumb_url, sizeof v.thumb_url, "https://i.example/thumb/a.jpg");
     dl_core_enqueue(w->core, &v);
     run(w, 600000);
     CHECK(item(w, ID_A).state == DL_DONE, "download unaffected");
     CHECK(file_of(w, ID_A, "jpg") == NULL, "no thumbnail");
     for (int i = 0; i < 100; i++) { pump(w); w->now += 3000; }
     CHECK(w->thumb_fetches == DL_THUMB_TRIES, "tried %d times in all", w->thumb_fetches);
-    char path[128];
     CHECK(dl_core_thumb_path(w->core, ID_A, path, sizeof path) == 0, "thumb path: none");
     world_free(w);
 
-    /* Something that is not a JPEG is not saved. */
+    /* Each way a body can be wrong is refused, and leaves nothing behind. */
+    for (int variant = 0; variant < 6; variant++) {
+        w = world_new();
+        core_new(w);
+        const char *what = "";
+        switch (variant) {
+        case 0: w->thumb[0] = 0x00; what = "not a JPEG"; break;
+        case 1: w->thumb[w->thumb_len - 1] = 0x00; what = "no end marker"; break;
+        case 2: w->thumb[28] = 0xFF; w->thumb[29] = 0xD9; w->thumb_cut = 30;
+                what = "complete-looking JPEG shorter than Content-Length"; break;
+        case 3: w->thumb_cut = 30; w->hide_thumb_clen = 1; what = "cut, no length"; break;
+        case 4: set_thumb(w, DL_THUMB_MAX_BYTES + 1); what = "over 256 KiB, advertised"; break;
+        case 5: set_thumb(w, DL_THUMB_MAX_BYTES + 1); w->hide_thumb_clen = 1;
+                what = "over 256 KiB, not advertised"; break;
+        }
+        dl_core_enqueue(w->core, &v);
+        run(w, 600000);
+        CHECK(item(w, ID_A).state == DL_DONE, "%s: the download is unaffected", what);
+        CHECK(file_of(w, ID_A, "jpg") == NULL, "%s: nothing saved", what);
+        CHECK(file_of(w, ID_A, "jpg.tmp") == NULL, "%s: no tmp left", what);
+        CHECK(dl_core_thumb_path(w->core, ID_A, path, sizeof path) == 0, "%s: no path", what);
+        world_free(w);
+    }
+
+    /* A complete JPEG of exactly 256 KiB is fine (and written in pieces). */
     w = world_new();
     core_new(w);
-    w->thumb[0] = 0x00;
+    set_thumb(w, DL_THUMB_MAX_BYTES);
     dl_core_enqueue(w->core, &v);
     run(w, 600000);
-    CHECK(file_of(w, ID_A, "jpg") == NULL, "not a JPEG: not saved");
-    CHECK(file_of(w, ID_A, "jpg.tmp") == NULL, "nothing left behind");
+    FFile *jf = file_of(w, ID_A, "jpg");
+    CHECK(jf && jf->size == DL_THUMB_MAX_BYTES && memcmp(jf->data, w->thumb, DL_THUMB_MAX_BYTES) == 0,
+          "256 KiB thumbnail saved whole");
+    CHECK(strstr(w->thumb_req, "mqdefault.jpg") && !strstr(w->thumb_req, "hqdefault"),
+          "never the list's URL");
     world_free(w);
 
-    /* Once saved, never fetched again, also across a restart; and every
-     * item gets one, paused or not. */
+    /* A transport failure gives the attempt back: a minute of failures does
+     * not use up the three tries. */
+    w = world_new();
+    core_new(w);
+    w->thumb_fail_transport = 1;
+    dl_core_enqueue(w->core, &v);
+    dl_core_pause(w->core, ID_A);
+    for (int i = 0; i < 60; i++) { pump(w); w->now += 2000; }
+    CHECK(w->thumb_fetches > DL_THUMB_TRIES, "keeps trying, throttled (%d)", w->thumb_fetches);
+    CHECK(w->thumb_fetches < 8, "backs off, not a request every few seconds (%d)",
+          w->thumb_fetches);
+    w->thumb_fail_transport = 0;
+    for (int i = 0; i < 60; i++) { pump(w); w->now += 2000; }
+    CHECK(file_of(w, ID_A, "jpg") != NULL, "a paused item gets its thumbnail too");
+    world_free(w);
+
+    /* Once saved, never fetched again, also across a restart; every item
+     * gets one, paused or not. */
     w = world_new();
     core_new(w);
     dl_core_enqueue(w->core, &v);
     yt_video_t v2 = video(ID_B, "B");
-    snprintf(v2.thumb_url, sizeof v2.thumb_url, "https://i.example/thumb/b.jpg");
     dl_core_enqueue(w->core, &v2);
     dl_core_pause(w->core, ID_B);
     run(w, 600000);
@@ -2012,6 +2128,7 @@ static void test_thumbnails(void) {
     run(w, 60000);
     CHECK(w->thumb_fetches == 2, "none after a restart (%d)", w->thumb_fetches);
     CHECK(dl_core_thumb_path(w->core, ID_B, path, sizeof path) == 1, "thumb path");
+    CHECK(strcmp(path, DIR ID_B ".jpg") == 0, "thumb path value");
     world_free(w);
 
     /* No thumbnail traffic while an online video plays. */
@@ -2132,7 +2249,7 @@ static void test_storage(void) {
     CHECK(!st.low && st.downloads_bytes == 0, "plenty");
     w->extra_used = 1000 * MIB;
     dl_core_storage(w->core, &st);
-    CHECK(st.free_bytes == 4096 * MIB, "cached for a second");
+    CHECK(st.free_bytes == 4096 * MIB, "a frame loop's repeated calls are answered from memory");
     w->now += 1500;
     dl_core_storage(w->core, &st);
     CHECK(st.free_bytes == 3096 * MIB, "then fresh");
@@ -2145,6 +2262,410 @@ static void test_storage(void) {
     w->now += 1500;
     dl_core_storage(w->core, &st);
     CHECK(st.low, "low");
+    world_free(w);
+}
+
+/* --- behaviours the Downloads screen and the player rely on ---------------- */
+
+static unsigned g_pr_rev;
+static uint64_t g_pr_time;
+static int64_t g_pr_bytes;
+static int g_pr_bad;
+
+/* Called after every piece of a response: while bytes keep arriving, the
+ * revision must keep moving. */
+static void progress_watch(World *w) {
+    unsigned r = dl_core_revision(w->core);
+    int64_t b = item(w, ID_A).bytes_done;
+    if (r != g_pr_rev) {
+        g_pr_rev = r;
+        g_pr_time = w->now;
+        g_pr_bytes = b;
+    } else if (b > g_pr_bytes && w->now - g_pr_time > 450) {
+        g_pr_bad++;
+    }
+}
+
+static void test_revision_and_commands(void) {
+    World *w = world_new();
+    core_new(w);
+    unsigned r = dl_core_revision(w->core);
+    long ops = w->fs_ops + w->net_ops;
+    CHECK(enq(w, ID_A, "A") == DL_ENQ_OK, "enqueue");
+    CHECK(dl_core_revision(w->core) != r, "enqueue bumps the revision");
+    CHECK(dl_core_count(w->core) == 1 && item(w, ID_A).state == DL_QUEUED,
+          "and is visible at once, before the worker did anything");
+    CHECK(w->fs_ops + w->net_ops - ops == 1,
+          "enqueue costs one free-space query and nothing else (%ld)",
+          w->fs_ops + w->net_ops - ops);
+
+    ops = w->fs_ops + w->net_ops;
+    r = dl_core_revision(w->core);
+    dl_core_pause(w->core, ID_A);
+    CHECK(dl_core_revision(w->core) != r && item(w, ID_A).state == DL_PAUSED, "pause");
+    r = dl_core_revision(w->core);
+    dl_core_resume(w->core, ID_A);
+    CHECK(dl_core_revision(w->core) != r && item(w, ID_A).state == DL_QUEUED, "resume");
+    r = dl_core_revision(w->core);
+    dl_core_pause_all(w->core);
+    CHECK(dl_core_revision(w->core) != r && item(w, ID_A).state == DL_PAUSED, "pause_all");
+    r = dl_core_revision(w->core);
+    dl_core_resume_all(w->core);
+    CHECK(dl_core_revision(w->core) != r && item(w, ID_A).state == DL_QUEUED, "resume_all");
+    DlItem tmp[4];
+    dl_core_snapshot(w->core, tmp, 4);
+    dl_core_get(w->core, ID_A, tmp);
+    dl_core_count(w->core);
+    dl_core_active_count(w->core);
+    r = dl_core_revision(w->core);
+    dl_core_delete(w->core, ID_A);
+    CHECK(dl_core_revision(w->core) != r, "delete bumps the revision");
+    CHECK(dl_core_count(w->core) == 0 && !has_item(w, ID_A), "and the row is gone at once");
+    CHECK(w->fs_ops + w->net_ops - ops == 0,
+          "commands and queries touch neither card nor network (%ld)",
+          w->fs_ops + w->net_ops - ops);
+    world_free(w);
+
+    /* Every state change, and the progress in between, shows in the revision. */
+    w = world_new();
+    core_new(w);
+    w->on_piece = progress_watch;
+    g_pr_bad = 0;
+    enq(w, ID_A, "A");
+    g_pr_rev = dl_core_revision(w->core);
+    g_pr_time = w->now;
+    g_pr_bytes = 0;
+    DlState seen = DL_QUEUED;
+    int changes = 0;
+    for (int i = 0; i < 100000; i++) {
+        unsigned before = dl_core_revision(w->core);
+        int rr = dl_core_step(w->core);
+        if (rr > 0) w->now += (uint64_t)rr;
+        DlItem it = item(w, ID_A);
+        if (it.state != seen) {
+            changes++;
+            CHECK(dl_core_revision(w->core) != before, "state %d -> %d without a bump", seen,
+                  it.state);
+            seen = it.state;
+        }
+        if (it.state == DL_DONE) break;
+    }
+    CHECK(seen == DL_DONE && changes >= 3, "went through its states (%d changes)", changes);
+    CHECK(g_pr_bad == 0, "progress was invisible for more than 450 ms %d times", g_pr_bad);
+    world_free(w);
+
+    /* A retry countdown shows in the revision as it ticks. */
+    w = world_new();
+    core_new(w);
+    w->fetch_all_fail = 1;
+    enq(w, ID_A, "A");
+    for (int i = 0; i < 4; i++) {
+        run_until(w, ID_A, DL_WAITING, 120000);
+        if (i < 3) run_until_not(w, ID_A, DL_WAITING, 120000);
+    }
+    CHECK(item(w, ID_A).retry_in_s == 8, "8 s countdown");
+    for (int k = 0; k < 5; k++) {
+        int before_s = item(w, ID_A).retry_in_s;
+        unsigned before = dl_core_revision(w->core);
+        w->now += 1000;
+        pump(w);
+        int after_s = item(w, ID_A).retry_in_s;
+        if (after_s != before_s && item(w, ID_A).state == DL_WAITING)
+            CHECK(dl_core_revision(w->core) != before, "countdown %d -> %d without a bump",
+                  before_s, after_s);
+    }
+    world_free(w);
+}
+
+static void test_storage_is_cheap(void) {
+    World *w = world_new();
+    core_new(w);
+    DlStorage st;
+    long o = w->fs_ops;
+    dl_core_storage(w->core, &st);
+    CHECK(w->fs_ops - o <= 1, "one query (%ld)", w->fs_ops - o);
+    o = w->fs_ops;
+    for (int i = 0; i < 100; i++) dl_core_storage(w->core, &st);
+    CHECK(w->fs_ops - o == 0, "a hundred calls in the same instant cost nothing");
+    for (int i = 0; i < 20; i++) {
+        w->now += 2000; /* the screen's own 2 s refresh */
+        o = w->fs_ops;
+        long n = w->net_ops;
+        dl_core_storage(w->core, &st);
+        CHECK(w->fs_ops - o <= 1 && w->net_ops == n, "at most one syscall per call");
+    }
+    /* The answer follows a delete at once: the screen asks right after it. */
+    enq(w, ID_A, "A");
+    run(w, 600000);
+    dl_core_storage(w->core, &st);
+    int64_t used_free = st.free_bytes;
+    dl_core_delete(w->core, ID_A);
+    run(w, 5000);
+    dl_core_storage(w->core, &st);
+    CHECK(st.free_bytes > used_free + SRC_LEN / 2,
+          "free space grew after the delete without waiting for the cache (%lld -> %lld)",
+          (long long)used_free, (long long)st.free_bytes);
+    world_free(w);
+}
+
+static int files_of(World *w, const char *id) {
+    int n = 0;
+    for (int i = 0; i < w->nfiles; i++)
+        if (strstr(w->files[i].path, id) != NULL) n++;
+    return n;
+}
+
+static void expect_gone(World *w, const char *id, const char *what) {
+    run(w, 5000);
+    pump(w);
+    pump(w);
+    CHECK(!has_item(w, id), "%s: still listed", what);
+    CHECK(files_of(w, id) == 0, "%s: %d files left behind", what, files_of(w, id));
+    restart_engine(w);
+    CHECK(dl_core_count(w->core) == 0, "%s: still in the index", what);
+}
+
+static void test_delete_every_state(void) {
+    /* queued */
+    World *w = world_new();
+    core_new(w);
+    enq(w, ID_A, "A");
+    enq(w, ID_B, "B");
+    dl_core_delete(w->core, ID_B);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE, "the other one is unaffected");
+    dl_core_delete(w->core, ID_A);
+    expect_gone(w, ID_B, "queued");
+    expect_gone(w, ID_A, "done");
+    world_free(w);
+
+    /* resolving */
+    w = world_new();
+    core_new(w);
+    w->resolve_hook = hook_delete_a;
+    enq(w, ID_A, "A");
+    expect_gone(w, ID_A, "resolving");
+    CHECK(w->nreq == 0, "nothing fetched for it");
+    world_free(w);
+
+    /* downloading is test_delete; paused */
+    w = world_new();
+    core_new(w);
+    w->piece = 10007;
+    w->hook_at = 1000000;
+    w->hook = hook_pause_a;
+    enq(w, ID_A, "A");
+    run_until(w, ID_A, DL_PAUSED, 60000);
+    pump(w);
+    CHECK(file_of(w, ID_A, "part") != NULL, "have a part file");
+    dl_core_delete(w->core, ID_A);
+    expect_gone(w, ID_A, "paused");
+    world_free(w);
+
+    /* waiting */
+    w = world_new();
+    core_new(w);
+    w->drop_after = 1234567;
+    enq(w, ID_A, "A");
+    run_until(w, ID_A, DL_WAITING, 60000);
+    dl_core_delete(w->core, ID_A);
+    expect_gone(w, ID_A, "waiting");
+    world_free(w);
+
+    /* failed, with its part file */
+    w = world_new();
+    core_new(w);
+    w->write_budget = 5000000;
+    enq(w, ID_A, "A");
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_FAILED && file_of(w, ID_A, "part"), "failed with a part");
+    dl_core_delete(w->core, ID_A);
+    expect_gone(w, ID_A, "failed");
+    world_free(w);
+
+    /* verifying: the file is renamed while the delete is pending */
+    w = world_new();
+    core_new(w);
+    w->open_read_hook = hook_delete_a;
+    enq(w, ID_A, "A");
+    expect_gone(w, ID_A, "verifying");
+    world_free(w);
+
+    /* delete, and enqueue the same video again, with files already there */
+    w = world_new();
+    core_new(w);
+    download_all(w, ID_A);
+    dl_core_delete(w->core, ID_A);
+    CHECK(enq(w, ID_A, "again") == DL_ENQ_OK, "enqueue straight after");
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && file_equals_src(w, ID_A, "mp4"), "fresh copy");
+    world_free(w);
+}
+
+static void hook_pause_all(World *w) { dl_core_pause_all(w->core); }
+
+static void test_pause_all_and_try_now(void) {
+    /* pause_all: queued, downloading; resume_all: paused only */
+    World *w = world_new();
+    core_new(w);
+    snprintf(w->live_id, sizeof w->live_id, "ddddddddddd");
+    enq(w, "eeeeeeeeeee", "E");
+    run(w, 600000);
+    enq(w, "ddddddddddd", "D");
+    run(w, 60000);
+    CHECK(item(w, "eeeeeeeeeee").state == DL_DONE, "E done");
+    CHECK(item(w, "ddddddddddd").state == DL_FAILED, "D failed");
+    w->piece = 10007;
+    w->hook_at = 1000000;
+    w->hook = hook_pause_all;
+    enq(w, ID_A, "A");
+    enq(w, ID_B, "B");
+    enq(w, ID_C, "C");
+    run(w, 60000);
+    CHECK(item(w, ID_A).state == DL_PAUSED && item(w, ID_B).state == DL_PAUSED &&
+              item(w, ID_C).state == DL_PAUSED, "downloading and queued ones paused");
+    CHECK(item(w, "ddddddddddd").state == DL_FAILED && item(w, "eeeeeeeeeee").state == DL_DONE,
+          "failed and done ones left alone");
+    int reqs = w->nreq;
+    for (int i = 0; i < 20; i++) { pump(w); w->now += 5000; }
+    CHECK(w->nreq == reqs, "nothing runs");
+    dl_core_resume_all(w->core);
+    CHECK(item(w, "ddddddddddd").state == DL_FAILED, "resume_all does not retry failures");
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && item(w, ID_B).state == DL_DONE &&
+              item(w, ID_C).state == DL_DONE, "paused ones continue");
+    CHECK(item(w, "ddddddddddd").state == DL_FAILED, "D still failed");
+    w->live_id[0] = '\0';
+    dl_core_resume(w->core, "ddddddddddd"); /* resume on FAILED is retry */
+    run(w, 600000);
+    CHECK(item(w, "ddddddddddd").state == DL_DONE, "retried and downloaded");
+    world_free(w);
+
+    /* RESOLVING */
+    w = world_new();
+    core_new(w);
+    w->resolve_hook = hook_pause_all;
+    enq(w, ID_A, "A");
+    run(w, 60000);
+    CHECK(item(w, ID_A).state == DL_PAUSED && w->nreq == 0, "paused while resolving");
+    world_free(w);
+
+    /* WAITING */
+    w = world_new();
+    core_new(w);
+    w->drop_after = 1234567;
+    enq(w, ID_A, "A");
+    run_until(w, ID_A, DL_WAITING, 60000);
+    dl_core_pause_all(w->core);
+    CHECK(item(w, ID_A).state == DL_PAUSED, "paused while waiting");
+    for (int i = 0; i < 20; i++) { pump(w); w->now += 5000; }
+    dl_core_resume_all(w->core);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && file_equals_src(w, ID_A, "mp4"), "continued");
+    world_free(w);
+
+    /* "Try now" when the connectivity flag is stale: the network works. */
+    w = world_new();
+    core_new(w);
+    w->connected = 0;
+    w->flag_stale = 1;
+    enq(w, ID_A, "A");
+    run(w, 5000);
+    DlItem it = item(w, ID_A);
+    CHECK(it.state == DL_WAITING && it.retry_in_s == -1, "flag says offline: waits");
+    CHECK(w->resolve_calls == 0, "and made no attempt by itself");
+    dl_core_resume(w->core, ID_A);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && file_equals_src(w, ID_A, "mp4"),
+          "resume on a waiting item tries at once");
+    world_free(w);
+
+    /* ... and when it really is down: one attempt, back to waiting. */
+    w = world_new();
+    core_new(w);
+    w->connected = 0;
+    enq(w, ID_A, "A");
+    run(w, 5000);
+    dl_core_resume(w->core, ID_A);
+    run(w, 5000);
+    it = item(w, ID_A);
+    CHECK(w->resolve_calls == 1, "one attempt (%d)", w->resolve_calls);
+    CHECK(it.state == DL_WAITING && it.retry_in_s == -1, "and it waits again");
+    world_free(w);
+
+    /* An online playback is not overridden by it. */
+    w = world_new();
+    core_new(w);
+    dl_core_playback_begin(w->core);
+    enq(w, ID_A, "A");
+    run(w, 5000);
+    dl_core_resume(w->core, ID_A);
+    run(w, 5000);
+    CHECK(w->resolve_calls == 0 && item(w, ID_A).state == DL_WAITING &&
+              item(w, ID_A).retry_in_s == -1, "still held");
+    dl_core_playback_end(w->core);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE, "done afterwards");
+    world_free(w);
+}
+
+static void test_done_file_is_untouched(void) {
+    World *w = world_new();
+    core_new(w);
+    download_all(w, ID_A);
+    CHECK(item(w, ID_A).state == DL_DONE, "done");
+    snprintf(w->watch, sizeof w->watch, "%s", ID_A);
+    w->mp4_mutations = 0;
+    char path[128];
+
+    /* Everything the UI and the player may do to a finished item except
+     * delete it. */
+    for (int round = 0; round < 3; round++) {
+        CHECK(enq(w, ID_A, "A") == DL_ENQ_EXISTS, "exists");
+        dl_core_resume(w->core, ID_A);
+        dl_core_pause(w->core, ID_A);
+        dl_core_pause_all(w->core);
+        dl_core_resume_all(w->core);
+        dl_core_playback_begin(w->core);
+        dl_core_local_path(w->core, ID_A, path, sizeof path);
+        dl_core_thumb_path(w->core, ID_A, path, sizeof path);
+        run(w, 5000);
+        dl_core_playback_end(w->core);
+        w->connected = 0;
+        w->gen++;
+        run(w, 5000);
+        w->connected = 1;
+        w->gen++;
+        enq(w, ID_B, "B"); /* another download comes and goes */
+        run(w, 600000);
+        dl_core_delete(w->core, ID_B);
+        run(w, 5000);
+        restart_engine(w);
+        run(w, 5000);
+    }
+    CHECK(item(w, ID_A).state == DL_DONE, "still done");
+    CHECK(w->mp4_mutations == 0, "the finished file was renamed, rewritten or removed (%d)",
+          w->mp4_mutations);
+    CHECK(file_equals_src(w, ID_A, "mp4"), "and is intact");
+    CHECK(dl_core_local_path(w->core, ID_A, path, sizeof path) == 1, "playable");
+
+    /* A report from the player turns it into a failure at once, and offers
+     * no path afterwards; the file itself stays until the user retries. */
+    dl_core_report_bad_file(w->core, ID_A);
+    DlItem it = item(w, ID_A);
+    CHECK(it.state == DL_FAILED && it.error == DL_ERR_VERIFY, "failed: verify");
+    CHECK(dl_core_local_path(w->core, ID_A, path, sizeof path) == 0, "no path any more");
+    run(w, 5000);
+    CHECK(w->mp4_mutations == 0, "nothing deleted behind the player's back");
+    dl_core_resume(w->core, ID_A);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && w->mp4_mutations > 0, "fetched again on retry");
+
+    /* delete is the one way it goes */
+    w->mp4_mutations = 0;
+    dl_core_delete(w->core, ID_A);
+    run(w, 5000);
+    CHECK(w->mp4_mutations == 1 && file_of(w, ID_A, "mp4") == NULL, "removed by delete");
     world_free(w);
 }
 
@@ -2179,6 +2700,11 @@ int main(void) {
     test_report_bad_file_and_local_path();
     test_shutdown_and_restart();
     test_storage();
+    test_revision_and_commands();
+    test_storage_is_cheap();
+    test_delete_every_state();
+    test_pause_all_and_try_now();
+    test_done_file_is_untouched();
     if (failures) {
         fprintf(stderr, "%d CHECK(S) FAILED\n", failures);
         return 1;

@@ -65,11 +65,19 @@
 #define DL_RESTART_LIMIT 5
 /* Thumbnail attempts per item over its whole life. */
 #define DL_THUMB_TRIES 3
-#define DL_THUMB_MAX_BYTES (DL_WBUF_BYTES)
+/* What src/ui/thumbs.c is willing to load; a bigger file would be refused
+ * there anyway, so it is not saved here. */
+#define DL_THUMB_MAX_BYTES (256 * 1024)
+/* The one receive buffer: chunks are written from it in DL_WBUF_BYTES pieces,
+ * a thumbnail is collected in all of it. */
+#define DL_BUF_BYTES DL_THUMB_MAX_BYTES
 #define DL_INDEX_WRITE_MS 5000
 #define DL_PROGRESS_BUMP_MS 250
 #define DL_SPEED_WINDOW_MS 500
-#define DL_STORAGE_CACHE_MS 1000
+/* dl_core_storage asks the card at most this often, however often it is
+ * called; short, because a delete or a finished download changes the answer
+ * and the Downloads screen asks right after one. */
+#define DL_STORAGE_CACHE_MS 250
 /* Largest index.json that is read at all (a full list is ~100 KB). */
 #define DL_INDEX_MAX_BYTES (512 * 1024)
 /* Sleep hints dl_core_step returns when it has nothing to do right now. */
@@ -163,6 +171,8 @@ typedef struct {
     unsigned char thumb_ok;        /* <id>.jpg is on the card */
     unsigned char thumb_tries;
     unsigned char wait_kind;       /* DL_WAIT_* */
+    unsigned char force_try;       /* the user said "try now": skip the
+                                    * connectivity check once */
     int fail_count;                /* consecutive failures without progress */
     int url_fails;
     int resolve_fails;
@@ -220,6 +230,7 @@ typedef struct DlCore {
     uint64_t url_ms;
     int64_t since_check;      /* written since the last free-space check */
     uint64_t thumb_next_ms;   /* no thumbnail attempt before this */
+    int thumb_streak;         /* thumbnail attempts in a row that failed */
 
     uint64_t spd_ms;          /* speed window */
     int64_t spd_bytes;
@@ -231,7 +242,7 @@ typedef struct DlCore {
 
     yt_stream_t stream;       /* resolve scratch */
     DlXfer x;
-    unsigned char wbuf[DL_WBUF_BYTES];
+    unsigned char wbuf[DL_BUF_BYTES];
 } DlCore;
 
 /* --- engine --------------------------------------------------------------- */

@@ -150,6 +150,8 @@ static void set_state(DlCore *c, DlCoreItem *it, DlState s) {
 
 static void fail_item(DlCore *c, DlCoreItem *it, DlError e) {
     it->pub.error = e;
+    it->force_try = 0;
+    c->st_valid = 0; /* a failure is often about space: look again */
     set_state(c, it, DL_FAILED);
     c->index_dirty = 1;
     if (c->cur_uid == it->uid) c->cur_uid = 0;
@@ -197,17 +199,25 @@ static int gate(DlCore *c, DlCoreItem *it) {
         enter_wait(c, it, DL_WAIT_HOLD, 0);
         return 1;
     }
-    if (!c->ops.net_connected(c->ops.user)) {
-        enter_wait(c, it, DL_WAIT_OFFLINE, 0);
-        return 1;
+    if (c->ops.net_connected(c->ops.user)) {
+        it->force_try = 0; /* the flag has caught up */
+        return 0;
     }
-    return 0;
+    if (it->force_try) {
+        /* The user pressed retry: believe them over the connectivity flag
+         * (it is sampled a few times a second) until an attempt fails. A real
+         * outage fails the very next request and lands back in the wait. */
+        return 0;
+    }
+    enter_wait(c, it, DL_WAIT_OFFLINE, 0);
+    return 1;
 }
 
 /* A request or resolve failed at the transport. gen0 is the network
  * generation when it started. Lock held. */
 static void note_failure(DlCore *c, DlCoreItem *it, int64_t progress,
                          unsigned gen0, const char *what) {
+    it->force_try = 0;
     unsigned gen = c->ops.net_generation(c->ops.user);
     if (gen != gen0) {
         /* The Wi-Fi came back or the console woke up while this was in
@@ -241,7 +251,11 @@ static int write_whole(DlCore *c, const char *path, const char *data,
     if (fd < 0) return -1;
     size_t done = 0;
     while (done < len) {
-        int64_t w = c->ops.fs_pwrite(c->ops.user, fd, data + done, len - done,
+        /* Each call holds the app-wide I/O lock for its whole duration: no
+         * single write bigger than a coalesced chunk. */
+        size_t piece = len - done;
+        if (piece > DL_WBUF_BYTES) piece = DL_WBUF_BYTES;
+        int64_t w = c->ops.fs_pwrite(c->ops.user, fd, data + done, piece,
                                      (int64_t)done);
         if (w <= 0) {
             c->ops.fs_close(c->ops.user, fd);
@@ -308,8 +322,10 @@ static int64_t read_whole(DlCore *c, const char *path, char *buf, size_t cap) {
     if (fd < 0) return -1;
     size_t got = 0;
     while (got < (size_t)size) {
-        int64_t r = c->ops.fs_pread(c->ops.user, fd, buf + got,
-                                    (size_t)size - got, (int64_t)got);
+        size_t piece = (size_t)size - got;
+        if (piece > DL_WBUF_BYTES) piece = DL_WBUF_BYTES;
+        int64_t r = c->ops.fs_pread(c->ops.user, fd, buf + got, piece,
+                                    (int64_t)got);
         if (r <= 0) break;
         got += (size_t)r;
     }
@@ -491,6 +507,8 @@ static int reap_one(DlCore *c) {
             break;
         }
     c->index_dirty = 1;
+    c->st_valid = 0; /* the card has more room now */
+    bump(c);
     core_log(c, "dl %s: deleted", id);
     UNLOCK(c);
     return 1;
@@ -750,6 +768,7 @@ static int thumb_headers(void *ctx, int status, int64_t clen,
         x->verdict = DL_XV_HTTP;
         return 1;
     }
+    x->expect_len = clen; /* -1: unknown, the JPEG's own end marker decides */
     x->accepted = 1;
     return 0;
 }
@@ -767,7 +786,17 @@ static int thumb_data(void *ctx, const void *buf, size_t len) {
     return 0;
 }
 
+/* A complete JPEG starts with the SOI marker and ends with EOI. */
+static int jpeg_complete(const unsigned char *p, int64_t n) {
+    return n > 4 && p[0] == 0xFF && p[1] == 0xD8 && p[n - 2] == 0xFF &&
+           p[n - 1] == 0xD9;
+}
+
 /* One best-effort thumbnail for any item that has none. Never fails an item.
+ *
+ * Not the list's thumb_url: those are hqdefault (4:3, letterboxed) and would
+ * look squashed in a 16:9 row. mqdefault is 16:9 and small (10-20 KB).
+ *
  * Entered with the lock held: returns 0 with it still held when there was
  * nothing to do, else 1 with it released. */
 static int thumb_job(DlCore *c) {
@@ -778,21 +807,22 @@ static int thumb_job(DlCore *c) {
     for (int i = 0; i < c->count; i++) {
         DlCoreItem *t = &c->items[i];
         if (!t->pending_delete && !t->thumb_ok &&
-            t->thumb_tries < DL_THUMB_TRIES && t->thumb_url[0]) {
+            t->thumb_tries < DL_THUMB_TRIES) {
             it = t;
             break;
         }
     }
     if (!it) return 0;
     uint32_t uid = it->uid;
-    char id[YT_VIDEO_ID_LEN], url[YT_THUMB_URL_MAX];
+    char id[YT_VIDEO_ID_LEN], url[96];
     memcpy(id, it->pub.video_id, sizeof id);
-    memcpy(url, it->thumb_url, sizeof url);
+    snprintf(url, sizeof url, "https://i.ytimg.com/vi/%s/mqdefault.jpg", id);
     it->thumb_tries++;
     c->cancel = 0;
     memset(&c->x, 0, sizeof c->x);
     c->x.uid = uid;
     c->x.first = -1;
+    c->x.expect_len = -1;
     c->x.fd = -1;
     UNLOCK(c);
 
@@ -800,8 +830,9 @@ static int thumb_job(DlCore *c) {
     int ret = c->ops.net_fetch(c->ops.user, url, -1, -1, &sink, &c->cancel);
     int ok = 0;
     char jpg[PATH_CAP], tmp[PATH_CAP];
-    if (ret == DL_NET_OK && c->x.accepted && c->x.wlen > 2 &&
-        c->wbuf[0] == 0xFF && c->wbuf[1] == 0xD8 &&
+    if (ret == DL_NET_OK && c->x.accepted &&
+        (c->x.expect_len < 0 || (int64_t)c->x.wlen == c->x.expect_len) &&
+        jpeg_complete(c->wbuf, (int64_t)c->x.wlen) &&
         path_of(jpg, sizeof jpg, id, "jpg") == 0 &&
         path_of(tmp, sizeof tmp, id, "jpg.tmp") == 0) {
         /* Complete or nothing: a half-written .jpg would be offered to the
@@ -827,7 +858,15 @@ static int thumb_job(DlCore *c) {
                 it->thumb_tries--;
         }
     }
-    if (!ok) c->thumb_next_ms = now_ms(c) + 5000;
+    if (ok) {
+        c->thumb_streak = 0;
+    } else {
+        /* Not on every step: 5 s, then 10, 20, 40, and 80 s at most. A
+         * thumbnail is never worth a request a second while the link is
+         * connected but dead. */
+        if (c->thumb_streak < 5) c->thumb_streak++;
+        c->thumb_next_ms = now_ms(c) + (5000u << (c->thumb_streak - 1));
+    }
     core_log(c, "dl %s: thumbnail %s (ret=%d status=%d)", id,
              ok ? "saved" : "not saved", ret, c->x.status);
     UNLOCK(c);
@@ -869,7 +908,9 @@ static int unit_wait(DlCore *c, DlCoreItem *it) {
         return DL_POLL_MS;
     }
     int go = 0;
-    if (it->wait_kind == DL_WAIT_HOLD) {
+    if (it->force_try) {
+        go = 1;
+    } else if (it->wait_kind == DL_WAIT_HOLD) {
         go = 1; /* the playback is over */
     } else if (it->wait_kind == DL_WAIT_OFFLINE) {
         go = connected || gen != it->wait_gen;
@@ -1317,6 +1358,7 @@ static int unit_verify(DlCore *c, DlCoreItem *it) {
             it->pub.error = DL_ERR_NONE;
             set_state(c, it, DL_DONE);
             c->index_dirty = 1;
+            c->st_valid = 0;
             if (c->cur_uid == uid) c->cur_uid = 0;
             core_log(c, "dl %s: done, %lld bytes", id, (long long)total);
         }
@@ -1463,6 +1505,7 @@ static void queue_item(DlCore *c, DlCoreItem *it) {
     it->pub.error = DL_ERR_NONE;
     it->qseq = ++c->next_qseq;
     it->fail_count = 0;
+    it->force_try = 0;
     set_state(c, it, DL_QUEUED);
 }
 
@@ -1480,9 +1523,10 @@ static void resume_item(DlCore *c, DlCoreItem *it) {
     case DL_WAITING:
         /* "Try now" — but not while an online video is playing, and no use
          * while there is no network. */
-        if (it->wait_kind == DL_WAIT_TIMER) {
+        if (it->wait_kind != DL_WAIT_HOLD) {
             it->next_try_ms = now_ms(c);
             it->fail_count = 0;
+            it->force_try = 1;
         }
         break;
     default:
