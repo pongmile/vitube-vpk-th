@@ -10,6 +10,9 @@
 #define HTTP_USER_AGENT "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip"
 
 static VitaHttpsClient *g_client;
+/* See http_transport_failures(). Bumped from whichever thread performed the
+ * request (list loads, the thumbnail workers), hence the atomic add. */
+static volatile unsigned g_transport_failures;
 
 void http_buf_free(http_buf_t *buf) {
     free(buf->data);
@@ -88,7 +91,14 @@ static int perform(const char *method, const char *url,
     /* HTTP-level errors (4xx/5xx) still produced a response body. */
     if (ret == VITA_HTTPS_ERROR_HTTP_STATUS && response.status_code > 0)
         return 0;
+    /* A cancel is the caller's own doing, not the network's. */
+    if (ret < 0 && !(cancel_flag && *cancel_flag))
+        __sync_fetch_and_add(&g_transport_failures, 1u);
     return ret;
+}
+
+unsigned http_transport_failures(void) {
+    return g_transport_failures;
 }
 
 int http_post(const char *url, const char *content_type, const void *body,

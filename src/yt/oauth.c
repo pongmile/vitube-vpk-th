@@ -143,6 +143,10 @@ static json_t *token_request(const char *form, volatile int *cancel) {
  * full connect timeout, twice per feed with the client fallback). */
 static time_t g_refresh_failed_until;
 
+void yt_oauth_forget_refresh_failure(void) {
+    g_refresh_failed_until = 0;
+}
+
 static int refresh_access_token(volatile int *cancel) {
     if (g_refresh_failed_until && time(NULL) < g_refresh_failed_until)
         return -1;

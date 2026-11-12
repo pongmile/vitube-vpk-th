@@ -17,6 +17,14 @@ int http_init(void);
 void http_shutdown(void);
 int http_connected(void);
 
+/* Running count of requests that failed below HTTP — DNS, connect, TLS,
+ * timeout — on any thread; cancelled requests are not counted. A caller
+ * compares it before and after an attempt to tell "the network failed" from
+ * "YouTube answered with an error", which the yt layer folds into one -1.
+ * Shared by every thread, so a thumbnail failing at the same moment counts
+ * too; that only ever errs towards one more retry. */
+unsigned http_transport_failures(void);
+
 /* All calls return 0 on success (any HTTP status), <0 on transport error.
  * *status receives the HTTP status code. extra_headers is a NULL-terminated
  * list of "Name: value" strings, may be NULL. Setting *cancel_flag = 1 from

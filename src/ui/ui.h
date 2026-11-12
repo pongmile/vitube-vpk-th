@@ -43,6 +43,12 @@ unsigned int vt_nav_repeat(VtNavRepeat *nav, unsigned int pressed,
 typedef int (*VtTaskFn)(void *arg);
 int vt_ui_run_task(const char *label, VtTaskFn fn, void *arg,
                    volatile int *cancel_flag);
+/* One whole frame of that spinner screen: `label`, the bar, an optional
+ * smaller `detail` line under it (NULL = none) and, with cancel_hint, the
+ * "○ Cancel" legend. Shared with the reconnect screen in net_task.c so a
+ * retry looks like the load it is, not like a different screen. */
+void vt_ui_busy_frame(const char *label, const char *detail, unsigned frame,
+                      int cancel_hint);
 
 /* Full-frame message with a small pause (error/info toast). */
 void vt_ui_toast(const char *line1, const char *line2, int frames);

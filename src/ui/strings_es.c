@@ -12,9 +12,11 @@ const char *const vt_strings_es[VT_STR_COUNT] = {
     /* --- app-wide --- */
     [S_CANCEL_HINT] = "○ Cancelar",
     [S_CANCELLING] = "Cancelando ...",
-    [S_NO_NETWORK] = "Sin conexión",
-    [S_CONNECT_WIFI] = "Conéctate a una red Wi-Fi y reinicia",
     [S_NET_INIT_FAILED] = "Error al inicializar la red",
+    [S_RECONNECTING] = "Reconectando ...",
+    [S_WAITING_FOR_WIFI] = "Esperando al Wi-Fi ...",
+    [S_RETRY_IN] = "Próximo intento en %d s",
+    [S_RETRY_ATTEMPT] = "Intento %d",
 
     /* --- tabs and the shell --- */
     [S_TAB_HOME] = "Inicio",

@@ -22,6 +22,12 @@ int yt_oauth_logged_in(void);
  * After a transport-level refresh failure the next 30 s return NULL at once
  * instead of repeating the blocking round trip for every request. */
 const char *yt_oauth_authorization(volatile int *cancel);
+/* Drops that 30 s hold. For a deliberate retry after the network came back
+ * (src/ui/net_task.c): the hold exists so ONE load does not repeat a dead
+ * round trip per request, but left in place it answered the retry with the
+ * failure from before the Wi-Fi returned — and the home feed then quietly
+ * fell back to the anonymous one. */
+void yt_oauth_forget_refresh_failure(void);
 
 /* Step 1: request a device + user code. 0 on success. *cancel = 1 aborts. */
 int yt_oauth_device_start(yt_device_auth_t *out, volatile int *cancel);
