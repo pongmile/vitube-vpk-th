@@ -1,258 +1,134 @@
-# ViTube
+# ViTube TH
 
-A native YouTube client for the PlayStation Vita, written in C against
-VitaSDK/vita2d. ViTube talks directly to YouTube's internal ("innertube")
-JSON API, plays videos through the Vita's hardware decoders.
+**ViTube ที่อ่านภาษาไทยได้** — แอป YouTube สำหรับ PlayStation Vita
+ฉบับนี้ fork มาจาก [**ViTube** ของ shorelight82](https://github.com/shorelight82/vitube-vpk)
+และเพิ่มเฉพาะการแสดงผลภาษาไทย
 
-## Status
+> ตัวแอปทั้งหมดเป็นผลงานของ **shorelight82** ได้แก่ หน้าแรก การค้นหา
+> ช่องที่ติดตาม การล็อกอิน การเล่นวิดีโอ 720p ด้วยฮาร์ดแวร์ของ Vita และระบบเครือข่าย
+> fork นี้แก้เฉพาะส่วนที่ทำให้ตัวอักษรไทยแสดงได้ถูกต้อง
+> ถ้าชอบแอปนี้ กรุณาไปกดดาวให้
+> [repo ต้นทาง](https://github.com/shorelight82/vitube-vpk) ด้วยครับ
 
-This app was built largely through vibe coding. It works, but
-is early/experimental — **use at your own risk, no guarantees.**
+## ดาวน์โหลด
 
-**Download (prebuilt VPK):** see [Releases](../../releases) — install with
-VitaShell or any other installer, requires HENkaku/Ensō.
+**[⬇ ดาวน์โหลด ViTube-TH.vpk (เวอร์ชันล่าสุด)](../../releases/latest/download/ViTube-TH.vpk)**
+· [ดู Release ทั้งหมด](../../releases)
 
-**Version 2.0** removes a bundled system plugin whose hooks could crash
-other apps with hardware video decoding after ViTube was closed — see
-[Installing on the Vita](#installing-on-the-vita) for details and a note for
-anyone updating from an older version.
+### วิธีติดตั้ง
 
-License: GPL-3.0-only (see [`LICENSE`](LICENSE)). A full list of bundled
-third-party components and their licenses is in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). This repository contains
-the complete Corresponding Source for the published VPK (GPL-3.0 §6).
+1. Vita ต้องลง HENkaku/Ensō ไว้แล้ว
+2. โอนไฟล์ `ViTube-TH.vpk` เข้า Vita ผ่าน VitaShell (FTP หรือ USB)
+3. ใน VitaShell กด ✕ ที่ไฟล์เพื่อติดตั้ง
+4. เปิดแอป ไปที่แท็บ **More → Region → ประเทศไทย**
 
-## Overview
+**หมายเหตุ:** แอปนี้ใช้ Title ID เดียวกับ ViTube ต้นฉบับ (`VTUB00001`)
+จึงติดตั้งทับ ViTube ตัวเดิม การล็อกอินและประวัติที่เก็บใน `ux0:data/ViTube/`
+ยังอยู่ครบ ถ้าอยากกลับไปใช้ตัวต้นฉบับ ให้ลง VPK จาก
+[Release ของต้นทาง](https://github.com/shorelight82/vitube-vpk/releases) ทับได้เลย
 
-ViTube runs as a single shell with four tabs — **Home**, **Search**,
-**Subscriptions**, **More** — under a shared header/tab/toast bar, plus a
-full-screen player opened from any video row (`src/ui/list_screen.c` is the
-central router). For video lists, search, channels, and subscriptions the
-app calls YouTube's official mobile/TV clients the same way the real apps do
-internally; for playback, 720p is resolved directly through YouTube's own
-HLS wherever possible, without an account and without routing through a
-custom server.
+ถ้าอัปเดตมาจาก ViTube เวอร์ชัน 1.2 หรือเก่ากว่า ให้รีบูตเครื่องหนึ่งครั้งหลังติดตั้ง
+(รายละเอียดอยู่ใน [README ต้นฉบับ](README.upstream.md#installing-on-the-vita))
 
-## Features
+## สิ่งที่ fork นี้เพิ่ม
 
-- **Home feed, search, channel uploads, subscription feed** — all via
-  YouTube's internal innertube API (`src/yt/innertube.c`), not the public
-  YouTube Data API.
-- **Login via Google's device-code flow** (`src/yt/oauth.c`): shows a code
-  plus a URL confirmed on a second device; only the refresh token is
-  persisted, under `ux0:data/ViTube/oauth.json`.
-- **History, recent searches, channel sort order** — persisted locally in a
-  single `state.json` (`src/store.c`), no cloud sync.
-- **Live streams and on-demand 720p via HLS**, with hardware video decoding
-  and automatic fallback to a progressive format if HLS fails for a given
-  video (`src/media/hls.c`, `src/ui/player_quality_switch.c`).
-- **Six-language UI** — German, English, Spanish, Brazilian Portuguese,
-  Italian, French (`src/ui/strings.c`, one table per language in
-  `src/ui/strings_*.c`) — plus a choice of content regions/languages
-  (DE/AT/CH, US, UK, FR, ES, IT, BR, TH; `src/yt/region.c`), which affects
-  titles, dates, and search results. On first launch the region follows the
-  console language, and the UI language follows the region.
-- **Thai text** — titles and channel names in Thai render with a bundled
-  Noto Sans Thai. vita2d has no shaping engine, so `tools/make-thai-font.py`
-  shapes every Thai cluster with HarfBuzz at build time and bakes the result
-  into private-use glyphs that `src/ui/thai_shape.c` substitutes at runtime.
-- **Touch and button controls** in the player (scrubbing, volume, quality
-  selection) via `src/ui/player_touch.c` / `player_hud.c`.
-
-## Architecture
-
-### Project structure
-
-| Path | Contents |
+| ก่อน | หลัง |
 |---|---|
-| `src/main.c`, `src/app.h` | Program entry point, global constants (data paths, screen size, color palette) |
-| `src/store.c` / `.h` | Persistent local state: history, recent searches, channel sort order |
-| `src/log.c` / `.h` | Append-only log file, also the app's single global I/O lock that serializes **every** `ux0:` file access |
-| `src/ui/` | All screens/widgets: lists, player, settings, login, log viewer, text input, thumbnail cache, shared drawing toolkit (`ui.c`) |
-| `src/yt/` | YouTube client: innertube requests, OAuth, JSON parsing, region/language selection |
-| `src/media/` | Playback sources: HLS demuxing, progressive HTTPS streaming, facade over the hardware decoder |
-| `src/net/` | Thin HTTP(S) wrapper over `vita-https` |
-| `external/` | Vendored dependencies (see below) |
-| `sce_sys/` | Contents of the VPK package: app icon |
-| `assets/` | Fonts (DejaVu Sans, Noto Emoji, Noto Sans Thai) with their license texts |
-| `tests/` | Host-side unit tests (see [Tests](#tests)) |
+| ชื่อคลิปและชื่อช่องภาษาไทยขึ้นเป็น □□□□ | แสดงเป็นตัวอักษรไทย |
+| สระบนกับวรรณยุกต์ซ้อนกันจนอ่านยาก เช่น "ที่" กลายเป็น "ทีี" | วางตำแหน่งตามแบบที่ HarfBuzz จัดให้ |
+| ไม่มีภูมิภาคไทย | เลือก **ประเทศไทย** ได้ ทำให้หน้าแรก ผลค้นหา และคำบอกวันที่เป็นภาษาไทย |
+| เรียงคลิป "ใหม่ล่าสุดก่อน" ไม่ได้กับคำอย่าง "3 วันที่ผ่านมา" | อ่านคำบอกเวลาภาษาไทยได้ |
 
-### App core & UI
+### ข้อจำกัดที่ยังมีอยู่
 
-`src/main.c` initializes logging, I/O, region/language, local state, and
-networking, then hands off permanently to `list_screen_run()` — there is no
-further higher-level event loop. `state.json` is written synchronously on
-every change (history capped at 30 entries with move-to-front on rewatch,
-searches capped at 10); screens detect changes cheaply via a revision
-counter rather than content comparison. All `ux0:` file access — logging,
-store, thumbnail cache, HLS prefetch — goes through the same lock in
-`log.c`, after a real hardware crash (2026-08-27) was traced back to
-concurrent, unserialized `SceIo` access.
+- **เมนูของแอปยังเป็นภาษาอังกฤษ** เพราะยังไม่มีคำแปลไทย เมื่อเลือกภูมิภาคไทย
+  แอปจะใช้เมนูภาษาอังกฤษ ส่วนเนื้อหาจาก YouTube จะเป็นภาษาไทย
+- **การพิมพ์ค้นหา**ใช้คีย์บอร์ดของระบบ Vita
+  ซึ่งพิมพ์ภาษาไทยได้หรือไม่ขึ้นอยู่กับคีย์บอร์ดของเครื่อง
+- ฟอนต์ไทยรองรับพยัญชนะตามด้วยสระบนหรือล่าง วรรณยุกต์ และสระอำ ซึ่งครอบคลุมภาษาไทยทั่วไป
+  ถ้าเครื่องหมายซ้อนกันมากกว่านั้น (เช่น พิมพ์วรรณยุกต์ซ้ำ) จะวาดตามลำดับโดยไม่จัดตำแหน่ง
 
-### YouTube integration (`src/yt/`)
+พบปัญหาเรื่องการแสดงผลภาษาไทย แจ้งได้ที่ [Issues ของ fork นี้](../../issues)
+ปัญหาอื่นของแอป (เล่นวิดีโอ ล็อกอิน ค้นหา) ส่วนใหญ่มาจากต้นทาง
+ให้ดู [Issues ของ ViTube](https://github.com/shorelight82/vitube-vpk/issues)
 
-ViTube speaks YouTube's non-public innertube API — the same JSON API that
-youtube.com and the official apps use internally. Since it isn't a public
-API, the app impersonates three different YouTube clients depending on the
-endpoint, because individual endpoints behave differently depending on
-sign-in state:
+## ทำงานอย่างไร (สำหรับนักพัฒนา)
 
-- **ANDROID** — the default for search, "up next"/suggestions, and stream
-  resolution.
-- **TVHTML5** ("YouTube on TV") — for everything that uses the OAuth token
-  (home feed while logged in, subscriptions, subscribe/unsubscribe), since
-  the token is issued specifically for this client type.
-- **VISIONOS** — the only client that (a) returns a real anonymous home feed
-  and (b) returns an already-signed HLS manifest without ViTube having to
-  solve YouTube's JavaScript `n`-parameter cipher — this is how 720p works
-  without an account.
+แอปวาดตัวอักษรด้วย vita2d ซึ่งวาดทีละตัวโดยไม่มีระบบจัดวางตัวอักษร (shaping)
+และไม่อ่านตาราง GSUB/GPOS ในฟอนต์ ขณะที่ภาษาไทยต้องใช้ตารางเหล่านี้
+เพื่อยกวรรณยุกต์ขึ้นเหนือสระบน เลื่อนเครื่องหมายบน ป ฝ ฟ ไปทางซ้าย
+และตัดเชิง ญ ฐ เมื่อมีสระล่าง
 
-Responses are parsed by a single recursive `walk()` function in
-`src/yt/parse.c` that recognizes all known renderer shapes (`videoRenderer`,
-`tileRenderer`, `videoWithContextData`, `compactChannelData`, …) across all
-three client types and fills fixed, heap-free structs (`src/yt/model.h`).
-Login uses Google's OAuth2 device-code flow (`src/yt/oauth.c`); only the
-refresh token is persisted, under `VITUBE_OAUTH_PATH`. The client ID/secret
-pair used there isn't ViTube's own application — it's the publicly known
-identity of Google's own "YouTube on TV" device type (the same one used in,
-among others, yt-dlp and Kodi's YouTube add-on) — needed because innertube
-only unlocks certain endpoints for official client types.
+fork นี้จึงย้ายการ shaping ไปทำตอน build แทนตอนรันแอป:
 
-### Media playback (`src/media/`)
+1. [`tools/make-thai-font.py`](tools/make-thai-font.py) ใช้ HarfBuzz จัดวางทุกกลุ่มอักษร
+   (พยัญชนะ + สระบน/ล่าง + วรรณยุกต์ + สระอำ) ของ Noto Sans Thai
+   ผลที่ต่างจากการวาดทีละตัวจะถูกบันทึกเป็น glyph ประกอบในช่วง Private Use Area
+   ของ [`assets/thai.ttf`](assets/thai.ttf) (ปัจจุบันมี 2,268 กลุ่ม)
+   และสคริปต์จะสร้างตาราง [`src/ui/thai_shape_table.h`](src/ui/thai_shape_table.h) ไปพร้อมกัน
+2. ตอนรันแอป [`src/ui/thai_shape.c`](src/ui/thai_shape.c)
+   จะเปลี่ยนข้อความไทยให้เป็น code point ของ glyph เหล่านั้น
+   ทำให้ vita2d วาดออกมาถูกต้องโดยไม่ต้องจัดตำแหน่งเพิ่ม
+   ผลลัพธ์ไม่ยาวกว่าข้อความเดิม จึงใช้บัฟเฟอร์ขนาดเท่าข้อความเดิมได้
+3. [`src/ui/ui.c`](src/ui/ui.c) ใช้ `thai.ttf` เป็นฟอนต์สำรองตัวที่สาม
+   ต่อจาก DejaVu Sans และ Noto Emoji ที่ต้นทางใช้อยู่แล้ว
+   และขยายกรอบตัดข้อความแนวตั้ง เพื่อไม่ให้วรรณยุกต์ที่ซ้อนสูงหรือสระล่างโดนตัด
 
-Two independent axes determine how a video is played:
+ส่วนอื่นที่แก้: เพิ่มภูมิภาค `th/TH` ใน [`src/yt/region.c`](src/yt/region.c)
+และเพิ่มคำบอกเวลาภาษาไทยใน `age_minutes()` ของ [`src/yt/parse.c`](src/yt/parse.c)
 
-1. **Source type** — a single, byte-range-readable file
-   (`src/media/remote_stream.c`, for progressive formats) or an HLS
-   playlist (`src/media/hls.c`, for live streams and on-demand 720p).
-2. **Decoder engine** — hardware H.264 decoding via `h264_vita`/SceVideodec
-   (vendored in `external/vita-hw-decoder`), mediated through
-   `src/media/vita_decoder.c`. There is no longer a CPU software decoder: it
-   was only reachable for direct formats, never produced a picture on any
-   device, and doubled the cost of every engine fix (see the git history of
-   `external/vita-sw-decoder`). The decoder calls the SceVideodec Internal
-   API directly — it no longer depends on a bundled system-wide plugin (see
-   [Installing on the Vita](#installing-on-the-vita)). If a hardware session
-   dies, the player reopens it once at the same position; for HLS, playback
-   then falls back to a direct progressive format.
+ถ้าต้องการสร้างฟอนต์ใหม่ (เช่น ตอนเปลี่ยนเวอร์ชัน Noto Sans Thai):
 
-HLS covers two YouTube manifest shapes, which `hls.c` distinguishes purely
-by the presence of `#EXT-X-ENDLIST`: on-demand 720p (demuxed into separate
-video/audio playlists, each loaded once) and live (a muxed MPEG-TS playlist
-with a rolling window, loaded once and shared by both decoder cursors). A
-dedicated worker-thread engine in `hls.c` prefetches upcoming segments into
-a byte-bounded ring so the FFmpeg demux/audio-clock thread never blocks on
-the network.
+```sh
+pip install fonttools uharfbuzz
+python3 tools/make-thai-font.py NotoSansThai-Regular.ttf
+```
 
-`src/ui/player_quality_switch.c` implements switching between HD (HLS) and
-direct quality as a three-stage async operation (resolve → prepare →
-commit), because the Vita can only ever have one hardware AAC decoder
-instance alive at a time.
+ต้องสร้าง `assets/thai.ttf` และ `src/ui/thai_shape_table.h` ใหม่พร้อมกันเสมอ
+URL และ sha256 ของฟอนต์ต้นฉบับอยู่ในหัวไฟล์สคริปต์
 
-720p used to run through a self-hosted `yt-dlp` server, since removed from
-the repository: the cookie session it needed kept expiring and made the
-approach unreliable in practice, so it was dropped in favor of direct HLS
-resolution.
+### Unit test
 
-### Networking (`src/net/`)
+```sh
+gcc -Isrc -Wall -o /tmp/tt tests/test_thai_shape.c src/ui/thai_shape.c && /tmp/tt
+```
 
-`src/net/http.c` is a thin wrapper over the vendored package
-`external/vita-https`, which in turn provides a purpose-built curl+Mbed TLS
-stack for the Vita (not the system VitaSDK curl/OpenSSL combo, whose
-OpenSSL 1.0.2 port is end-of-life and GPLv3-incompatible). `vita-https`
-enforces TLS 1.2 as a minimum, verifies peer and hostname by default against
-a bundled Mozilla CA bundle, allows only `https://` URLs, and requires
-explicit `sha256//` SPKI pinning for private/self-signed endpoints.
+test ตรวจทุกแถวในตารางที่สร้างไว้ ทั้งเมื่อข้อความอยู่ติดกับข้อความอื่น
+ข้อความที่ไม่ใช่ภาษาไทยต้องผ่านไปโดยไม่เปลี่ยน
+UTF-8 ที่ถูกตัดกลางคันต้องไม่ทำให้อ่านเกินขอบ
+และผลลัพธ์ต้องไม่ยาวกว่าข้อความเดิม
+test อื่นของต้นทางดูได้ใน [README ต้นฉบับ](README.upstream.md#tests)
 
 ## Build
 
-### Prerequisites
+ทุกครั้งที่ push จะมี [GitHub Actions](.github/workflows/build.yml)
+build VPK ด้วย Docker image ของ VitaSDK แล้วแนบไฟล์ไว้ใน artifact ของ run นั้น
+ถ้า push tag ที่ขึ้นต้นด้วย `v` จะสร้าง Release พร้อมไฟล์ `ViTube-TH.vpk` ให้ด้วย
 
-- An installed [VitaSDK](https://vitasdk.org) with the `VITASDK`
-  environment variable set.
-- CMake ≥ 3.16.
-- The following two artifacts must exist before the top-level
-  `CMakeLists.txt` can even configure (it aborts with `FATAL_ERROR`
-  otherwise): a built FFmpeg library at
-  `external/vita-hw-decoder/build/deps/ffmpeg-vita-hw/lib/libavcodec.a` and a
-  built curl library at
-  `external/vita-https/build/deps/curl-mbedtls/lib/libcurl.a`.
+ถ้าจะ build เอง ทำตามขั้นตอนใน [README ต้นฉบับ](README.upstream.md#build) ได้เลย
+(ต้องมี VitaSDK และ build FFmpeg กับ curl ก่อน)
 
-### 1. Build vendored dependencies
+## เครดิต
 
-Both build scripts need to be run once with `VITASDK` set.
+- **[ViTube](https://github.com/shorelight82/vitube-vpk)** โดย **shorelight82**
+  เป็นตัวแอปทั้งหมด รวมถึงสถาปัตยกรรม การเชื่อมต่อ YouTube innertube
+  การเล่น HLS 720p การถอดรหัสวิดีโอด้วยฮาร์ดแวร์ ระบบเครือข่าย vita-https
+  และ UI ทั้งหมด
+  เอกสารฉบับเต็มของผู้พัฒนาอยู่ใน [README.upstream.md](README.upstream.md)
+- **[Noto Sans Thai](https://github.com/notofonts/thai)** โดย The Noto Project Authors
+  ใช้ภายใต้ SIL Open Font License 1.1
+  ([`assets/THAI-FONT-LICENSE.txt`](assets/THAI-FONT-LICENSE.txt))
+  `assets/thai.ttf` คือฉบับดัดแปลงที่เพิ่ม glyph ซึ่งจัดตำแหน่งไว้แล้ว
+- **[HarfBuzz](https://github.com/harfbuzz/harfbuzz)** และ
+  **[fontTools](https://github.com/fonttools/fonttools)**
+  ใช้ตอนสร้างฟอนต์เท่านั้น ไม่ได้รวมอยู่ในแอป
+- ส่วนประกอบอื่นที่ต้นทางใช้ เช่น FFmpeg, ส่วนถอดรหัส `h264_vita` จาก wiliwili,
+  VitaWave, curl, Mbed TLS, jansson, DejaVu Sans, Noto Emoji และ VitaSDK
+  ดูรายการเต็มและไลเซนส์ได้ที่ [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
 
-```sh
-export VITASDK=/path/to/vitasdk
+## ไลเซนส์
 
-cd external/vita-hw-decoder && ./tools/build-ffmpeg.sh && cd -
-cd external/vita-https      && ./tools/build-curl-mbedtls.sh && cd -
-```
-
-### 2. Build ViTube
-
-```sh
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-```
-
-The result is `build/ViTube.vpk` — the packaging step (`vita_create_vpk` in
-`CMakeLists.txt`) bundles the icon, all relevant license texts (GPLv3
-§4/§6-compliant: ViTube's own GPL, `THIRD_PARTY_NOTICES.md`, FFmpeg's LGPL,
-wiliwili's GPL patch, the CA bundle's MPL, font licenses), and the three fonts
-from `assets/`.
-
-### Installing on the Vita
-
-Transfer the resulting `ViTube.vpk` to the Vita via VitaShell or any other
-installer and install it. On first launch the app creates
-`ux0:data/ViTube/` (login refresh token, history/settings, region/language,
-HD preference) — delete that folder any time to reset the app to its
-out-of-the-box state.
-
-If you're updating from version 1.2 or earlier, reboot the console once
-after installing. Those versions bundled the taiHEN plugin
-`reAvPlayer.suprx`, whose system-wide hooks in the shared `SceAvcodecUser`
-module stayed active after ViTube was closed from the LiveArea and crashed
-other apps with hardware video decoding (VitaDB, for one). Since 2.0, ViTube
-no longer needs the plugin — the decoder calls the SceVideodec functions
-directly — but a hook left behind by an older version only clears on
-reboot.
-
-## Tests
-
-`tests/` contains five host-side unit tests that **do not** run on the
-Vita: `tests/stubs/` provides stand-in headers for `vita-https` and part of
-the VitaSDK kernel headers so logic like HLS playlist/segment handling can
-run on the build machine.
-
-- `test_hls.c` — HLS playlist, segment, and cursor logic against a
-  simulated HTTP server.
-- `test_parse.c` — the innertube JSON parser against real, captured API
-  responses in `tests/fixtures/`; must be run with `tests/` as the working
-  directory, since fixtures are referenced relatively.
-- `test_player_touch.c`, `test_strings.c` — touch-gesture math and parity of
-  every language table against the German original (format strings, button
-  glyphs, key names, lengths), respectively.
-- `test_thai_shape.c` — the Thai cluster substitution against every entry of
-  the generated table, plus pass-through and truncation cases.
-
-There is **no** CMake/CTest target and no build script under `tests/`. Only
-for `test_player_touch.c`, `test_strings.c` and `test_thai_shape.c` is the build command
-documented directly in the file's header comment (a simple one-line `gcc`
-invocation that links in the corresponding `src/` file). For `test_hls.c`
-and `test_parse.c` there is no build command recorded in the repository.
-
-## License & third-party notices
-
-ViTube is licensed under **GPL-3.0-only** ([`LICENSE`](LICENSE)). A table of
-all bundled/linked third-party components with license and source is in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — among them the patched
-FFmpeg build (LGPL base, brought to GPL-3.0 by wiliwili's `h264_vita`
-hardware-decode patch), libcurl, Mbed TLS, jansson, and the bundled fonts.
-
-`src/media/vita_decoder.c` descends from the
-[VitaWave](https://github.com/spyro-98/VitaWave) project. VitaWave's own
-source is not part of this repository (ViTube does not build it) — the
-complete source is already public in the linked upstream repository.
+GPL-3.0-only เหมือนต้นทาง (ดู [`LICENSE`](LICENSE))
+ซอร์สโค้ดที่ตรงกับไฟล์ VPK แต่ละ Release คือ repo นี้ที่ tag ของ Release นั้น
+(ตามข้อกำหนด GPL-3.0 §6)
+ไลเซนส์ของส่วนประกอบทั้งหมดรวมอยู่ในไฟล์ VPK ที่โฟลเดอร์ `licenses/`
