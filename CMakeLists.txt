@@ -148,7 +148,15 @@ vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME} UNSAFE NOASLR)
 vita_create_vpk(ViTube.vpk ${VITA_TITLEID} ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.self
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
+  # Bubble icon, full-screen backdrop and the LiveArea (the page shown before
+  # the app starts): template.xml lays out bg.png with startup.png as the
+  # gate. All drawn by tools/make-livearea.py; the system only accepts 8-bit
+  # indexed PNGs here.
   FILE sce_sys/icon0.png sce_sys/icon0.png
+  FILE sce_sys/pic0.png sce_sys/pic0.png
+  FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
+  FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
+  FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
   # Licence texts travel with the binary (GPLv3 s.4/s.6): ViTube's own GPL,
   # the notices naming every linked component, FFmpeg's LGPL and wiliwili's
   # GPL (installed by tools/build-ffmpeg.sh next to the libraries), the font
