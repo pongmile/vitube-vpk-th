@@ -212,6 +212,87 @@ typedef enum {
     S_ERR_NO_STREAM_DATA,
     S_SIGNIN_DENIED,
 
+    /* === BEGIN downloads UI (src/ui/downloads_screen.c, list_screen.c) ===
+     * One block, appended last, so that the ids of other work end up above or
+     * below it as a whole. Hint bars that name SELECT: on a row of a video
+     * list that button opens the download menu, which is why each of those
+     * lists has a *_DL twin of its hint (the plain one stays for the empty
+     * list, where SELECT still goes to the Mehr tab). */
+
+    /* The tab, and the decimal mark vt_fmt_* prints sizes with ("." or ","). */
+    S_TAB_DOWNLOADS,
+    S_DL_DECIMAL_MARK,
+
+    /* Storage line above the list. Free, total, used by downloads / free
+     * (red: the card is below the reserve), used by downloads. */
+    S_DL_STORAGE,
+    S_DL_STORAGE_LOW,
+    /* Also the toast after refusing a download, and the menu's title. */
+    S_DL_FULL_FREE,
+
+    /* Nothing downloaded yet: a title and two lines saying how to start. */
+    S_DL_EMPTY_TITLE,
+    S_DL_EMPTY_LINE1,
+    S_DL_EMPTY_LINE2,
+
+    /* The status line of a row. Pieces joined with " · " by the screen:
+     * "42 %" + "15.3 of 36.4 MB" + "1.2 MB/s". */
+    S_DL_ST_QUEUED,
+    S_DL_ST_RESOLVING,
+    S_DL_ST_PERCENT,
+    S_DL_ST_OF,
+    S_DL_ST_PAUSED,
+    S_DL_ST_WAIT_PLAYBACK,
+    S_DL_ST_RETRY_IN,
+    S_DL_ST_RETRY_NOW,
+    S_DL_ST_VERIFYING,
+    S_DL_ST_READY,
+
+    /* Why a download failed; one per DlError. NO_SPACE: needed, free. */
+    S_DL_ERR_NO_SPACE,
+    S_DL_ERR_SPACE_FREED,
+    S_DL_ERR_DISK_FULL,
+    S_DL_ERR_NOT_DOWNLOADABLE,
+    S_DL_ERR_VERIFY,
+    S_DL_ERR_NETWORK,
+    S_DL_ERR_URL,
+    S_DL_ERR_IO,
+
+    /* The menu. The action words double as the "✕ %s" of the Downloads
+     * hint, so each must read as a verb on its own. */
+    S_DLM_TITLE,
+    S_DLM_TITLE_FREE,
+    S_DLM_DOWNLOAD,
+    S_DLM_OPEN,
+    S_DLM_PLAY,
+    S_DLM_PAUSE,
+    S_DLM_RESUME,
+    S_DLM_RETRY,
+    S_DLM_RETRY_NOW,
+    S_DLM_PAUSE_ALL,
+    S_DLM_RESUME_ALL,
+    S_DLM_DELETE,
+    S_DLM_CONFIRM_DELETE,
+    S_DLM_YES_DELETE,
+    S_DLM_KEEP,
+
+    /* What the app says after an action. */
+    S_DLT_QUEUED,
+    S_DLT_EXISTS,
+    S_DLT_BAD,
+    S_DLT_DELETED,
+
+    /* Hint bars. DL_ROW: ✕ gets the action the focused row's state offers. */
+    S_HINT_DL_ROW,
+    S_HINT_DL_ROW_PLAIN,
+    S_HINT_HOME_DL,
+    S_HINT_HISTORY_DL,
+    S_HINT_SEARCH_VIDEOS_DL,
+    S_HINT_SUBS_VIDEOS_DL,
+    S_HINT_CHANNEL_UNSUB_DL,
+    S_HINT_CHANNEL_SUB_DL,
+    /* === END downloads UI === */
+
     VT_STR_COUNT
 } VtStringId;
 
