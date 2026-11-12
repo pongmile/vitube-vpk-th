@@ -49,6 +49,26 @@ typedef struct VitaHttpsClientConfig {
 typedef size_t (*VitaHttpsWriteCallback)(const void *data, size_t size,
 	                                     void *opaque);
 
+/* Called once for every complete response header block, before any body byte
+ * of that response reaches the write callback. A followed redirect produces a
+ * block per hop, so a caller that only cares about the final answer ignores
+ * 3xx. `content_length` is -1 when the header is absent; `content_range` is
+ * the header's value ("bytes 0-1023/4096") or "" when absent. Returning
+ * non-zero aborts the transfer (perform then fails with a curl write error)
+ * without a single body byte having been delivered, which is what lets a
+ * caller refuse an answer it must not write to disk (a 200 to a Range request,
+ * an error page) instead of finding out when perform has already returned. */
+typedef int (*VitaHttpsResponseCallback)(void *opaque, long status,
+	                                     int64_t content_length,
+	                                     const char *content_range);
+
+/* Polled with cancel_flag (libcurl's progress tick: about once a second even
+ * when no data arrives, more often while it does). Non-zero aborts the
+ * transfer. For a condition the caller cannot raise through a flag from the
+ * thread that is blocked in perform, such as "the Wi-Fi came back, this
+ * socket is dead". */
+typedef int (*VitaHttpsAbortCallback)(void *opaque);
+
 typedef struct VitaHttpsRequest {
 	const char *method;
 	const char *url;
@@ -58,6 +78,12 @@ typedef struct VitaHttpsRequest {
 	VitaHttpsWriteCallback write;
 	void *write_opaque;
 	volatile int *cancel_flag;
+	/* Both optional (NULL = unused); added after the original fields so
+	 * existing initialisers keep working. */
+	VitaHttpsResponseCallback on_response;
+	void *on_response_opaque;
+	VitaHttpsAbortCallback should_abort;
+	void *should_abort_opaque;
 } VitaHttpsRequest;
 
 typedef struct VitaHttpsResponse {

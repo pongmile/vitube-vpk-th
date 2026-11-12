@@ -176,6 +176,95 @@ static int progress_cancel(void *opaque, curl_off_t down_total,
 	return cancel && *cancel;
 }
 
+/* State of the header callback (VitaHttpsRequest.on_response): the status
+ * line, Content-Length and Content-Range of the block being received. */
+typedef struct HeaderState {
+	const VitaHttpsRequest *request;
+	long status;
+	int64_t content_length;
+	char content_range[96];
+} HeaderState;
+
+static int header_is(const char *line, size_t len, const char *name) {
+	size_t n = strlen(name);
+	if (len < n) return 0;
+	for (size_t i = 0; i < n; i++) {
+		char ch = line[i];
+		if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+		if (ch != name[i]) return 0;
+	}
+	return 1;
+}
+
+static size_t header_write(char *data, size_t size, size_t count,
+	                       void *opaque) {
+	HeaderState *state = (HeaderState *)opaque;
+	size_t bytes = size * count;
+	size_t len = bytes;
+	while (len > 0 && (data[len - 1] == '\r' || data[len - 1] == '\n')) len--;
+	if (len == 0) {
+		/* Blank line: the block is complete. Reset status so a trailer's
+		 * closing blank line after the body does not report it twice, and
+		 * stay silent for 1xx interim answers. */
+		long status = state->status;
+		state->status = 0;
+		if (status >= 200 && state->request->on_response &&
+		    state->request->on_response(state->request->on_response_opaque,
+		                                status, state->content_length,
+		                                state->content_range))
+			return 0;
+		return bytes;
+	}
+	if (len >= 5 && memcmp(data, "HTTP/", 5) == 0) {
+		size_t at = 5;
+		while (at < len && data[at] != ' ') at++;
+		while (at < len && data[at] == ' ') at++;
+		state->status = 0;
+		while (at < len && data[at] >= '0' && data[at] <= '9')
+			state->status = state->status * 10 + (data[at++] - '0');
+		state->content_length = -1;
+		state->content_range[0] = '\0';
+	} else if (header_is(data, len, "content-length:")) {
+		size_t at = 15;
+		while (at < len && data[at] == ' ') at++;
+		int64_t value = 0;
+		int digits = 0;
+		while (at < len && data[at] >= '0' && data[at] <= '9' &&
+		       value < ((int64_t)1 << 56)) {
+			value = value * 10 + (data[at++] - '0');
+			digits++;
+		}
+		state->content_length = digits ? value : -1;
+	} else if (header_is(data, len, "content-range:")) {
+		size_t at = 14;
+		while (at < len && data[at] == ' ') at++;
+		size_t n = len - at;
+		if (n >= sizeof(state->content_range)) n = sizeof(state->content_range) - 1;
+		memcpy(state->content_range, data + at, n);
+		state->content_range[n] = '\0';
+	}
+	return bytes;
+}
+
+/* Replaces progress_cancel when a request carries an abort callback. */
+typedef struct AbortHook {
+	volatile int *cancel;
+	VitaHttpsAbortCallback check;
+	void *opaque;
+} AbortHook;
+
+static int hook_progress(void *opaque, curl_off_t down_total,
+	                     curl_off_t down_now, curl_off_t up_total,
+	                     curl_off_t up_now) {
+	(void)down_total;
+	(void)down_now;
+	(void)up_total;
+	(void)up_now;
+	AbortHook *hook = (AbortHook *)opaque;
+	if (hook->cancel && *hook->cancel) return 1;
+	return hook->check && hook->check(hook->opaque) ? 1 : 0;
+}
+
 static void apply_common(CURL *curl, const VitaHttpsClient *client,
 	                     volatile int *cancel) {
 	struct curl_blob ca = {
@@ -395,6 +484,20 @@ int vita_https_perform(VitaHttpsClient *client,
 	                 request->write ? bridge_write : discard_write);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA,
 	                 request->write ? (void *)&bridge : NULL);
+	HeaderState header_state = { request, 0, -1, "" };
+	if (request->on_response) {
+		curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_write);
+		curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void *)&header_state);
+	}
+	AbortHook abort_hook = { request->cancel_flag, request->should_abort,
+	                         request->should_abort_opaque };
+	if (request->should_abort) {
+		/* After apply_common on purpose: this replaces its cancel-only
+		 * progress function with one that also asks the caller. */
+		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, hook_progress);
+		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void *)&abort_hook);
+	}
 	CURLcode code = curl_easy_perform(curl);
 	long status = 0;
 	curl_off_t length = -1;
@@ -416,6 +519,8 @@ int vita_https_perform(VitaHttpsClient *client,
 		 * (and to the caller's stack bridge) before the next reuse. */
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, NULL);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, NULL);
+		curl_easy_setopt(curl, CURLOPT_HEADERDATA, NULL);
+		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 	} else {
 		/* After any failure the next request starts from a fresh handle:
 		 * a handshake is cheap next to a connection in an odd state, and
