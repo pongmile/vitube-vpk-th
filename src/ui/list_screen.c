@@ -48,9 +48,10 @@
  * the scroll code is noticed:
  *
  * - `top` stays the index of the first row in view, kept up to date every
- *   frame. Code that resets a list (a new search, a reload, a re-sort) still
- *   just writes `top = 0`, and that is honoured as "scroll there", so none of
- *   it needed to learn about pixels.
+ *   frame. A `top` written from outside is honoured as "scroll there".
+ *   Code that refills a list from scratch (a new search, a reload, a
+ *   re-sort) also calls list_scroll_reset(): `top = 0` alone goes unnoticed
+ *   when `top` already was 0.
  * - A `cursor` that moved since the last frame (buttons, a tap, a reset) is
  *   eased into view. Touch scrolling deliberately does not move the cursor
  *   while the list is in motion; see list_scroll_step(). */
@@ -59,6 +60,17 @@ typedef struct {
     int synced_top;
     int synced_cursor;
 } ListScroll;
+
+/* Back to the top, at rest, for a list whose rows were all replaced. A list
+ * nudged by less than one row (or still coasting near the top) has `top` 0
+ * already, so writing `top = 0` changes nothing list_scroll_step() can see:
+ * the new first row would be drawn up to a row's height under the tab bar,
+ * and a fling or drag left running on the old rows would go on over the
+ * new ones. All-zero is what a fresh list starts as (see VtKineticScroll),
+ * and matches the `cursor = 0, top = 0` the caller writes next to it. */
+static void list_scroll_reset(ListScroll *s) {
+    memset(s, 0, sizeof *s);
+}
 
 typedef enum { TAB_HOME = 0, TAB_SEARCH, TAB_ABOS, TAB_MORE, TAB_COUNT } AppTab;
 /* Every tab is in one of three views, and both Suche and Abos start on their
@@ -190,6 +202,7 @@ static void run_search(const char *query) {
     g_search.count = 0;
     g_search.cursor = 0;
     g_search.top = 0;
+    list_scroll_reset(&g_search.scroll);
     snprintf(g_search_query, sizeof g_search_query, "%s", query);
     /* Only queries that actually returned: a list of failed attempts is
      * not a list of what the user was looking for. */
@@ -201,6 +214,7 @@ static void run_search(const char *query) {
     g_search_channels.count = 0;
     g_search_channels.cursor = 0;
     g_search_channels.top = 0;
+    list_scroll_reset(&g_search_channels.scroll);
     g_search_channels.loaded = 1;
     channel_list_absorb(&g_search_channels, &task.channels);
     g_view[TAB_SEARCH] = g_search.count == 0 && g_search_channels.count > 0
@@ -247,6 +261,7 @@ static void run_home(void) {
     g_home.count = 0;
     g_home.cursor = 0;
     g_home.top = 0;
+    list_scroll_reset(&g_home.scroll);
     if (ret == 0) video_list_absorb(&g_home, &task.page);
     if (!g_home.loaded)
         vt_ui_toast(vt_str(S_NO_VIDEOS_LOADED),
@@ -284,6 +299,7 @@ static void run_abos_feed(void) {
     g_abos_feed.count = 0;
     g_abos_feed.cursor = 0;
     g_abos_feed.top = 0;
+    list_scroll_reset(&g_abos_feed.scroll);
     video_list_absorb(&g_abos_feed, &task.page);
 }
 
@@ -357,6 +373,7 @@ static void sort_channels(void) {
     }
     g_channels.cursor = 0;
     g_channels.top = 0;
+    list_scroll_reset(&g_channels.scroll);
 }
 
 static void run_channels(void) {
@@ -383,6 +400,7 @@ static void run_channels(void) {
     g_channels.count = 0;
     g_channels.cursor = 0;
     g_channels.top = 0;
+    list_scroll_reset(&g_channels.scroll);
     channel_list_absorb(&g_channels, &task.page);
     /* Recency comes from the subscription feed, so it has to be there before
      * the list can be ordered by it — one extra request when the Abos tab is
@@ -425,6 +443,7 @@ static void run_channel_detail(const yt_channel_t *channel) {
     g_channel_videos.count = 0;
     g_channel_videos.cursor = 0;
     g_channel_videos.top = 0;
+    list_scroll_reset(&g_channel_videos.scroll);
     g_channel_videos.loaded = 1;
     video_list_absorb(&g_channel_videos, &task.page);
     g_view[g_tab] = VIEW_CHANNEL_DETAIL;
@@ -899,7 +918,13 @@ void list_screen_run(void) {
                     ch->cursor = row;
                 }
             }
-            if (pressed & SCE_CTRL_CROSS) {
+            /* Cross with the selection carried off screen by a drag or a
+             * fling picks a row on screen, as a direction does (see
+             * cursor_into_view), instead of opening one the user cannot
+             * see. */
+            if ((pressed & SCE_CTRL_CROSS) &&
+                !cursor_into_view(&ch->scroll, &ch->cursor, ch->count,
+                                  CHANNEL_ROW_H)) {
                 run_channel_detail(&ch->items[ch->cursor]);
                 sceCtrlPeekBufferPositive(0, &previous, 1);
             }
@@ -965,7 +990,11 @@ void list_screen_run(void) {
                 load_more_search();
                 resync_input(&previous);
             }
-            if (pressed & SCE_CTRL_CROSS) {
+            /* Same as in the channel list: no playing a row that a drag or
+             * a fling has carried off screen. */
+            if ((pressed & SCE_CTRL_CROSS) &&
+                !cursor_into_view(&videos->scroll, &videos->cursor,
+                                  videos->count, ROW_H)) {
                 player_screen_run(&videos->items[videos->cursor]);
                 sceCtrlPeekBufferPositive(0, &previous, 1);
                 ui_touch_reset();
