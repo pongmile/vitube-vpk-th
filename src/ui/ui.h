@@ -33,7 +33,8 @@ int vt_ui_tab_bar_badged(const char *const *tabs, const int *badges, int count,
                          int active);
 /* The tab under a touch at (x, y), or -1 when it is not on the bar. Uses the
  * layout vt_ui_tab_bar_badged() draws with, so it must be given the same
- * `tabs` and `badges`. The target is the bar's full height. */
+ * `tabs` and `badges`. The target is the bar's full height plus a strip
+ * of the top bar above it. */
 int vt_ui_tab_hit(const char *const *tabs, const int *badges, int count, int x,
                   int y);
 

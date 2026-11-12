@@ -607,6 +607,7 @@ void vt_ui_menu_draw(const char *title, const VtMenuItem *items, int count,
  * inside the touch target instead of hanging off the corner. One digit is a
  * circle, "9+" a short pill. */
 #define TAB_BADGE_GAP 6
+#define TAB_HIT_UP 12
 static int badge_width(int badge) {
     return badge <= 0 ? 0 : (badge > 9 ? 26 : 16);
 }
@@ -664,7 +665,9 @@ int vt_ui_tab_bar(const char *const *tabs, int count, int active) {
 
 int vt_ui_tab_hit(const char *const *tabs, const int *badges, int count, int x,
                   int y) {
-    if (y < TAB_BAR_Y || y >= TAB_BAR_Y + TAB_BAR_H) return -1;
+    /* The bar is 34 px, under 4 mm on the Vita's screen; the strip of the top
+     * bar above it has no touch function, so it lends the target 12 px. */
+    if (y < TAB_BAR_Y - TAB_HIT_UP || y >= TAB_BAR_Y + TAB_BAR_H) return -1;
     int left = 16;
     for (int i = 0; i < count; i++) {
         int w = tab_width(tabs[i], badges ? badges[i] : 0);
