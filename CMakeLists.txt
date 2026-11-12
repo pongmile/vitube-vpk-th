@@ -82,6 +82,7 @@ add_executable(${PROJECT_NAME}
   src/ui/text_input.c
   src/ui/thumbs.c
   src/ui/kinetic_scroll.c
+  src/ui/dl_format.c
   src/ui/rows_view.c
   src/ui/list_screen.c
   src/ui/net_task.c

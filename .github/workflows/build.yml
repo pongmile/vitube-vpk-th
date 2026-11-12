@@ -29,6 +29,9 @@ jobs:
           gcc -Isrc -Wall -Wextra -Werror -o /tmp/tks tests/test_kinetic_scroll.c \
               src/ui/kinetic_scroll.c -lm
           /tmp/tks
+          gcc -Isrc -Wall -Wextra -Werror -o /tmp/tdf tests/test_dl_format.c \
+              src/ui/dl_format.c
+          /tmp/tdf
 
   vpk:
     runs-on: ubuntu-latest
