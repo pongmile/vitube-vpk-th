@@ -240,6 +240,7 @@ const char *const vt_strings_es[VT_STR_COUNT] = {
     [S_DLT_EXISTS] = "Ya está en descargas",
     [S_DLT_BAD] = "No se puede descargar este vídeo",
     [S_DLT_DELETED] = "Descarga eliminada",
+    [S_DLT_LIST_FULL] = "Lista de descargas llena: elimina alguna antes",
     /* --- downloads: hint bars --- */
     [S_HINT_DL_ROW] = "✕ %s   SELECT Menú   △ Buscar",
     [S_HINT_DL_ROW_PLAIN] = "SELECT Menú   △ Buscar",

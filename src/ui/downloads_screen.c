@@ -937,7 +937,17 @@ static void toast_enqueue_result(DlEnqueue result) {
          * is exactly what changed. */
         DlStorage st;
         char text[128];
-        if (dl_storage(&st) == 0) {
+        /* The engine also answers FULL when its list is at capacity (128
+         * entries), with the card half empty: "memory card is full, only
+         * 20 GB free" would be a sentence that contradicts itself. The same
+         * test as the engine's own, free space under the reserve, tells the
+         * two apart. */
+        int have_card = dl_storage(&st) == 0;
+        if (have_card && !st.low) {
+            snackbar(vt_str(S_DLT_LIST_FULL), 1);
+            break;
+        }
+        if (have_card) {
             char free_s[VT_FMT_SIZE_MAX];
             size_text(free_s, st.free_bytes);
             snprintf(text, sizeof text, vt_str(S_DL_FULL_FREE), free_s);

@@ -293,6 +293,9 @@ typedef enum {
     S_DLT_EXISTS,
     S_DLT_BAD,
     S_DLT_DELETED,
+    /* Refusal when the list itself is full (the engine keeps 128 entries),
+     * which is not the memory card being full. */
+    S_DLT_LIST_FULL,
 
     /* Hint bars. DL_ROW: ✕ gets the action the focused row's state offers. */
     S_HINT_DL_ROW,

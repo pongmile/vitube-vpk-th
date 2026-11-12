@@ -236,6 +236,7 @@ const char *const vt_strings_de[VT_STR_COUNT] = {
     [S_DLT_EXISTS] = "Schon in den Downloads",
     [S_DLT_BAD] = "Dieses Video kann nicht geladen werden",
     [S_DLT_DELETED] = "Download gelöscht",
+    [S_DLT_LIST_FULL] = "Download-Liste ist voll: erst einige löschen",
     /* --- downloads: hint bars --- */
     [S_HINT_DL_ROW] = "✕ %s   SELECT Menü   △ Suche",
     [S_HINT_DL_ROW_PLAIN] = "SELECT Menü   △ Suche",
