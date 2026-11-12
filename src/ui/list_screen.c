@@ -816,7 +816,19 @@ void list_screen_run(void) {
             if (hit >= 0 && hit != (int)g_tab)
                 switch_tab((AppTab)hit, &previous);
         }
-        if (g_view[g_tab] == VIEW_CHANNEL_DETAIL) {
+        if (modal) {
+            /* Nothing below this line is for a button pressed under a modal.
+             * The download menu opens over exactly the views whose own keys
+             * follow (Circle leaves a channel; Square (un)subscribes there,
+             * and flips Suche and Abos between their videos and channels;
+             * START flips Start to the history and Suche to the recent
+             * searches), and Circle is also the menu's own "close": without
+             * this guard dismissing the menu over a channel's videos also
+             * threw the viewer out of the channel, and a Square on the way
+             * subscribed to it (or started a channel-list load). The settings
+             * picker never met this only because it lives on a tab none of
+             * these branches serve. */
+        } else if (g_view[g_tab] == VIEW_CHANNEL_DETAIL) {
             /* Circle returns to the channel list of the tab this was opened
              * from — the search hits, or the subscriptions. */
             if (pressed & SCE_CTRL_CIRCLE) g_view[g_tab] = VIEW_CHANNELS;
