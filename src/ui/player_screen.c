@@ -679,8 +679,14 @@ static PlayResult play_video(const yt_video_t *video, const char *local_path) {
             /* A downloaded file that dies this early is not a stream having a
              * bad moment: reopening it at the same place has been tried and
              * there is no other source to go to. The wrapper tells the engine,
-             * and plays the video from the network instead if it can. */
-            if (local_at_start) {
+             * and plays the video from the network instead if it can.
+             *
+             * Not when the viewer pressed Circle at the reopen's spinner
+             * ("Resuming"): the reopen was never given its chance, so nothing
+             * says the file is bad, only that the viewer has left — and the
+             * verdict wipes the download and starts streaming the video they
+             * just walked out of. */
+            if (local_at_start && !cancel) {
                 vt_log("%s: downloaded file failed at %u ms",
                        video->video_id, (unsigned)status.position_ms);
                 bad_local = 1;
