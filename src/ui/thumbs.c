@@ -2,7 +2,13 @@
  * A worker thread downloads JPEG bytes for a caller-given URL; the main
  * thread decodes and uploads them as vita2d textures (GPU objects stay on
  * the render thread). Entries are keyed by an opaque string (video id,
- * channel id, ...) so the same URL is never re-queued while cached. */
+ * channel id, ...) so the same URL is never re-queued while cached.
+ *
+ * The Downloads screen also shows thumbnails that were saved to the memory
+ * card (vt_thumbs_get_file): the same slots, the same worker and the same
+ * decode step, only the bytes come from a file instead of the network — so
+ * the 48-slot cache, the retry budget and the netwatch reset all apply to
+ * them unchanged, and a screen full of downloads works with no network. */
 #include "ui/thumbs.h"
 
 #include <pthread.h>
@@ -10,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <psp2/io/fcntl.h>
 #include <psp2/kernel/threadmgr.h>
 
 #include <vita_https.h>
@@ -34,7 +41,8 @@ typedef enum {
 
 typedef struct {
     char key[THUMB_KEY_MAX];
-    char url[THUMB_URL_MAX];
+    char url[THUMB_URL_MAX]; /* a file path when is_file */
+    int is_file;             /* the bytes are read from `url`, not fetched */
     SlotState state;
     unsigned char *jpeg;
     size_t jpeg_len;
@@ -123,6 +131,38 @@ static void copy_url_as_jpeg(char *dst, size_t cap, const char *url) {
     }
 }
 
+/* The file twin of download_jpeg(), for a thumbnail saved with a download.
+ * Worker thread, under the app-wide card lock like every other ux0: access
+ * (log.h). A file at or over the cap is refused rather than cut: half a JPEG
+ * either fails to decode or shows a torn image. */
+static int read_jpeg_file(const char *path, unsigned char **out,
+                          size_t *out_len) {
+    unsigned char *data = malloc(THUMB_MAX_JPEG);
+    if (!data) return -1;
+    size_t len = 0;
+    vt_io_lock();
+    SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
+    if (fd >= 0) {
+        for (;;) {
+            int n = sceIoRead(fd, data + len, THUMB_MAX_JPEG - len);
+            if (n <= 0) break;
+            len += (size_t)n;
+            if (len >= THUMB_MAX_JPEG) break;
+        }
+        sceIoClose(fd);
+    }
+    vt_io_unlock();
+    if (fd < 0 || len == 0 || len >= THUMB_MAX_JPEG) {
+        free(data);
+        return -1;
+    }
+    unsigned char *shrunk = realloc(data, len);
+    if (shrunk) data = shrunk;
+    *out = data;
+    *out_len = len;
+    return 0;
+}
+
 static int download_jpeg(const char *url, unsigned char **out, size_t *out_len) {
     JpegBuf buf = { malloc(THUMB_MAX_JPEG), 0, THUMB_MAX_JPEG };
     if (!buf.data) return -1;
@@ -154,6 +194,7 @@ static void *worker_main(void *opaque) {
         char url[THUMB_URL_MAX] = {0};
         char key[THUMB_KEY_MAX] = {0};
         int slot_index = -1;
+        int is_file = 0;
         pthread_mutex_lock(&g_lock);
         /* Most recently drawn first: that is what is on screen now. Queue
          * order was request order, so after a fast scroll the visible rows
@@ -169,6 +210,7 @@ static void *worker_main(void *opaque) {
             g_slots[slot_index].attempts++;
             memcpy(url, g_slots[slot_index].url, sizeof url);
             memcpy(key, g_slots[slot_index].key, sizeof key);
+            is_file = g_slots[slot_index].is_file;
         }
         pthread_mutex_unlock(&g_lock);
         if (slot_index < 0) {
@@ -177,7 +219,8 @@ static void *worker_main(void *opaque) {
         }
         unsigned char *jpeg = NULL;
         size_t len = 0;
-        int ret = download_jpeg(url, &jpeg, &len);
+        int ret = is_file ? read_jpeg_file(url, &jpeg, &len)
+                          : download_jpeg(url, &jpeg, &len);
         pthread_mutex_lock(&g_lock);
         ThumbSlot *slot = &g_slots[slot_index];
         /* the slot may have been recycled for a different key while
@@ -199,7 +242,9 @@ static void *worker_main(void *opaque) {
          * holding g_lock across that would stall the worker and pair this
          * lock with the I/O lock. Download and decode failures were
          * indistinguishable before — both just left a black square. */
-        if (ret != 0) vt_log("thumb download failed: %.150s", url);
+        if (ret != 0)
+            vt_log(is_file ? "thumb file unreadable: %.150s"
+                           : "thumb download failed: %.150s", url);
         free(jpeg);
     }
     return NULL;
@@ -246,7 +291,8 @@ void vt_thumbs_term(void) {
     g_thumb_client = NULL;
 }
 
-static void recycle_slot(ThumbSlot *slot, const char *key, const char *url) {
+static void recycle_slot(ThumbSlot *slot, const char *key, const char *url,
+                         int is_file) {
     free(slot->jpeg);
     slot->jpeg = NULL;
     slot->jpeg_len = 0;
@@ -255,7 +301,10 @@ static void recycle_slot(ThumbSlot *slot, const char *key, const char *url) {
         slot->texture = NULL;
     }
     snprintf(slot->key, sizeof slot->key, "%s", key);
-    copy_url_as_jpeg(slot->url, sizeof slot->url, url);
+    slot->is_file = is_file;
+    /* A path is used as it is; only a URL needs the JPEG rewrites. */
+    if (is_file) snprintf(slot->url, sizeof slot->url, "%s", url);
+    else copy_url_as_jpeg(slot->url, sizeof slot->url, url);
     slot->state = SLOT_QUEUED;
     slot->last_used = g_tick;
     /* A new image starts with a clean retry budget — without this it would
@@ -265,8 +314,11 @@ static void recycle_slot(ThumbSlot *slot, const char *key, const char *url) {
     slot->failed_at = 0;
 }
 
-vita2d_texture *vt_thumbs_get(const char *key, const char *url) {
-    if (!key || !key[0] || !url || !url[0]) return NULL;
+/* The one lookup behind vt_thumbs_get() and vt_thumbs_get_file(): `source` is
+ * a URL, or a file path when is_file. */
+static vita2d_texture *thumbs_lookup(const char *key, const char *source,
+                                     int is_file) {
+    if (!key || !key[0] || !source || !source[0]) return NULL;
     vita2d_texture *texture = NULL;
     pthread_mutex_lock(&g_lock);
     g_tick++;
@@ -308,9 +360,25 @@ vita2d_texture *vt_thumbs_get(const char *key, const char *url) {
             victim = slot;
         }
     }
-    if (!found && victim) recycle_slot(victim, key, url);
+    if (!found && victim) recycle_slot(victim, key, source, is_file);
     pthread_mutex_unlock(&g_lock);
     return texture;
+}
+
+vita2d_texture *vt_thumbs_get(const char *key, const char *url) {
+    return thumbs_lookup(key, url, 0);
+}
+
+/* Keyed apart from the network entries ("f:" + key): a list row and a
+ * download row for the same video would otherwise be one slot with two
+ * different sources, and a network failure on the row in Home would block the
+ * saved file on the row in Downloads — exactly the offline case this exists
+ * for. Two textures of one 152x85 picture are cheaper than that. */
+vita2d_texture *vt_thumbs_get_file(const char *key, const char *path) {
+    char file_key[THUMB_KEY_MAX];
+    if (!key || !key[0]) return NULL;
+    snprintf(file_key, sizeof file_key, "f:%s", key);
+    return thumbs_lookup(file_key, path, 1);
 }
 
 void vt_thumbs_pump(void) {
