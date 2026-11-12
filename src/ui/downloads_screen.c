@@ -106,6 +106,15 @@ static void remember_cursor(void) {
 }
 
 static void rebuild(uint64_t now) {
+    /* The newest are the ones that fall off the end, so the log says so: a
+     * list that silently stops growing would be a puzzling bug report. Once
+     * per crossing, not once per refresh. */
+    static int logged_overflow;
+    int total = dl_count();
+    if (total > DLS_MAX && !logged_overflow)
+        vt_log("downloads: %d items, the screen shows the first %d", total,
+               DLS_MAX);
+    logged_overflow = total > DLS_MAX;
     g_count = dl_snapshot(g_snap, DLS_MAX);
     if (g_count < 0) g_count = 0;
     if (g_count > DLS_MAX) g_count = DLS_MAX;
@@ -552,8 +561,9 @@ static void draw_header(int top) {
             if (used > g_storage.total_bytes) used = g_storage.total_bytes;
             int fill = (int)((double)used / (double)g_storage.total_bytes * mw);
             if (fill < 1 && used > 0) fill = 1;
-            vt_ui_rect(mx, my, fill, 6, g_storage.low ? VT_COLOR_DANGER
-                                                      : VT_COLOR_FAINT);
+            if (fill > 0)
+                vt_ui_rect(mx, my, fill, 6, g_storage.low ? VT_COLOR_DANGER
+                                                          : VT_COLOR_FAINT);
         }
     }
     vt_ui_rect(0, top + HEADER_H - 1, VT_SCREEN_W, 1, VT_COLOR_BORDER);
@@ -607,7 +617,7 @@ static void draw_progress(const DlItem *it, int x, int y, int w) {
         if (f > 1) f = 1;
         int fw = (int)(f * w);
         if (fw < 1 && it->bytes_done > 0) fw = 1;
-        vt_ui_rect(x, y, fw, 4, fill_color);
+        if (fw > 0) vt_ui_rect(x, y, fw, 4, fill_color);
     } else if (it->state == DL_DOWNLOADING || it->state == DL_RESOLVING) {
         /* The server has not said how big it is: a sweep says "working"
          * without promising a percentage. */
@@ -1021,6 +1031,17 @@ void downloads_menu_draw(void) {
 
 /* --- the tab's input ------------------------------------------------------------------ */
 
+int downloads_long_press_row(const VtKineticScroll *k, uint64_t now_us,
+                             int row_h, int count) {
+    /* PRESSED: down and still inside the tap slop. A finger that caught a
+     * coasting list is no row's, and one that moved is scrolling. */
+    if (k->mode != VT_KINETIC_PRESSED || k->caught) return -1;
+    if (now_us - k->down_us < DLS_LONG_PRESS_US) return -1;
+    if (k->down_y < 0) return -1;
+    int row = (k->down_y + k->down_draw_offset) / row_h;
+    return row < count ? row : -1;
+}
+
 void downloads_screen_enter(void) {
     g_synced = 0;
     sync_items();
@@ -1072,6 +1093,15 @@ int downloads_screen_input(unsigned pressed, unsigned direction,
 
     int row = scroll_step(touch_flags, touch);
     int act_row = -1;
+    int held = downloads_long_press_row(&g_scroll.kinetic,
+                                        sceKernelGetProcessTimeWide(), ROW_H,
+                                        g_count);
+    if (held >= 0) {
+        g_cursor = held;
+        remember_cursor();
+        downloads_menu_open_selected();
+        return 0;
+    }
     if (row >= 0) {
         if (row == g_cursor) act_row = row;
         else g_cursor = row;

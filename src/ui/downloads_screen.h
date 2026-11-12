@@ -9,6 +9,9 @@
 
 #include <stddef.h>
 
+#include <stdint.h>
+
+#include "ui/kinetic_scroll.h"
 #include "ui/touch.h"
 #include "yt/model.h"
 
@@ -73,6 +76,16 @@ DlMenuResult downloads_menu_input(unsigned pressed, unsigned direction,
                                   unsigned touch_flags,
                                   const UiTouchEvent *touch);
 void downloads_menu_draw(void);
+
+/* A long press is the touch way to the menu: SELECT has no touch equivalent,
+ * and a finger cannot reach the Downloads rows' menu (delete) any other way.
+ * Returns the row of `rows` (row height `row_h`) a finger has been resting on
+ * for DLS_LONG_PRESS_US without moving, or -1. Call it every frame with the
+ * list's scroll state, after the scroll step; the touch layer is reset when
+ * the menu opens, which also ends the press, so it fires once. */
+#define DLS_LONG_PRESS_US 600000ULL
+int downloads_long_press_row(const VtKineticScroll *k, uint64_t now_us,
+                             int row_h, int count);
 
 /* --- markers and messages --------------------------------------------------- */
 

@@ -1054,7 +1054,15 @@ void list_screen_run(void) {
             int row = list_scroll_step(&videos->scroll, &videos->cursor,
                                        &videos->top, videos->count, ROW_H,
                                        touch_flags, &touch, &settled);
-            if (row >= 0) {
+            /* Resting a finger on a row is its download menu — what SELECT
+             * does, for touch. The menu ends the press (it resets touch). */
+            int held = downloads_long_press_row(&videos->scroll.kinetic,
+                                                sceKernelGetProcessTimeWide(),
+                                                ROW_H, videos->count);
+            if (held >= 0) {
+                videos->cursor = held;
+                downloads_menu_open_video(&videos->items[held]);
+            } else if (row >= 0) {
                 if (row == videos->cursor) {
                     player_screen_run(&videos->items[row]);
                     sceCtrlPeekBufferPositive(0, &previous, 1);
