@@ -56,22 +56,35 @@ int player_source_init(PlayerSource *source, const char *url, int is_hls,
     return 0;
 }
 
+int player_source_init_local(PlayerSource *source, const char *path) {
+    if (!source || !path) return -1;
+    memset(source, 0, sizeof *source);
+    if (vt_local_stream_factory_init(&source->local, path) < 0) return -1;
+    source->is_local = 1;
+    return 0;
+}
+
 void player_source_term(PlayerSource *source) {
     if (!source) return;
-    if (source->is_hls) {
+    if (source->is_local) {
+        vt_local_stream_factory_term(&source->local);
+    } else if (source->is_hls) {
         vt_hls_stream_factory_term(&source->hls_video);
         if (!source->hls_muxed) vt_hls_stream_factory_term(&source->hls_audio);
     } else {
         vt_remote_stream_factory_term(&source->remote);
     }
     source->is_hls = 0;
+    source->is_local = 0;
     source->hls_muxed = 0;
 }
 
 void player_source_apply(const PlayerSource *source,
                          VtDecoderPlayerConfig *config) {
     if (!source || !config) return;
-    if (source->is_hls) {
+    if (source->is_local) {
+        config->stream = source->local.factory;
+    } else if (source->is_hls) {
         config->stream = source->hls_video.factory;
         /* Muxed: leaving stream_audio zeroed is what makes the decoder open
          * this same factory a second time for its audio cursor — and that
@@ -103,6 +116,8 @@ void player_source_apply(const PlayerSource *source,
 
 void player_source_repoint_cancel(PlayerSource *source, volatile int *cancel) {
     if (!source) return;
+    /* A file on the card has no transfer to cancel: nothing to repoint. */
+    if (source->is_local) return;
     if (source->is_hls) {
         source->hls_video.cancel_flag = cancel;
         if (!source->hls_muxed) source->hls_audio.cancel_flag = cancel;
@@ -161,13 +176,18 @@ typedef struct {
     volatile int *cancel;
     PlayerSource *source_out;
     int source_ready;
+    int is_local; /* url is a path on the card (open_local_blocking) */
 } OpenTask;
 
 static int open_task(void *opaque) {
     OpenTask *task = opaque;
     if (!task->source_ready) {
-        if (player_source_init(task->source_out, task->url, task->is_hls,
-                               task->max_fps, task->cancel) < 0) {
+        int init = task->is_local
+                 ? player_source_init_local(task->source_out, task->url)
+                 : player_source_init(task->source_out, task->url,
+                                      task->is_hls, task->max_fps,
+                                      task->cancel);
+        if (init < 0) {
             vt_log("open %.80s: source init failed", task->url);
             return -1;
         }
@@ -268,6 +288,54 @@ static int open_from_url_blocking(const char *url, int is_hls, int max_fps,
         if (ret < 0 && open.source_ready)
             vt_log("open %.80s: vt_decoder_open failed ret=%d "
                    "expected=%dx%d@%dfps", url, ret, exp_w, exp_h, exp_fps);
+        vt_decoder_destroy(player);
+        if (open.source_ready) player_source_term(source_out);
+        return ret < 0 ? ret : -1;
+    }
+    *player_out = player;
+    return 0;
+}
+
+/* Blocking open of a downloaded file: the first open of an offline playback.
+ * Same shape as open_from_url_blocking, minus everything that is about a
+ * network — no max_fps (there is no variant to pick), no start position (an
+ * offline playback starts at the beginning and a reopen goes through
+ * vt_decoder_seek, which reuses this config).
+ *
+ * The expected size and frame rate are only the decoder's fallback for a
+ * container that carries none; a finished MP4 always does, and the decoder
+ * prefers what the file says. approximate_seek stays on, as for every
+ * progressive source: it is the seek mode this app's direct playback has been
+ * exercised in on hardware (video resumes at the keyframe at or before the
+ * target and audio is aligned to it), and the exact mode would start video at
+ * the NEXT keyframe after the target while audio plays from the target itself.
+ * On a local file approximate is also the cheap one — no discard scan. */
+int open_local_blocking(const char *path, int volume, int start_paused,
+                        volatile int *cancel, PlayerSource *source_out,
+                        VtDecoderPlayer **player_out) {
+    VtDecoderPlayer *player = vt_decoder_create();
+    if (!player) {
+        vt_log("open %.80s: vt_decoder_create failed", path);
+        return -1;
+    }
+    OpenTask open = {
+        player,
+        {
+            .expected_width = 640,
+            .expected_height = 360,
+            .expected_fps = 30,
+            .volume_percent = volume,
+            .cancel_flag = cancel,
+            .approximate_seek = 1,
+            .start_paused = start_paused,
+        },
+        path, 0, 0, cancel, source_out, 0, 1,
+    };
+    int ret = vt_ui_run_task(vt_str(S_LOADING_VIDEO), open_task, &open, cancel);
+    if (ret < 0 || (cancel && *cancel)) {
+        if (ret < 0 && open.source_ready)
+            vt_log("open %.80s: vt_decoder_open failed ret=%d (card said %d)",
+                   path, ret, source_out->local.last_error);
         vt_decoder_destroy(player);
         if (open.source_ready) player_source_term(source_out);
         return ret < 0 ? ret : -1;

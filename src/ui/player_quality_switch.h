@@ -34,27 +34,34 @@
 #include <stdint.h>
 
 #include "media/hls.h"
+#include "media/local_stream.h"
 #include "media/remote_stream.h"
 #include "media/vita_decoder.h"
 #include "yt/model.h"
 
-/* One playable source, in either of the two shapes this app can open:
+/* One playable source, in any of the three shapes this app can open:
  *  - a progressive MP4 over an HTTPS range stream (YouTube's direct 360p
- *    formats, and the HD server's muxed file), or
+ *    formats, and the HD server's muxed file),
  *  - YouTube's HLS, which is the app's own route to 720p and to live. On
  *    demand that is two playlists, one per media type, each fetched by its
  *    own cursor; live is one muxed playlist that both cursors read (see
- *    hls_muxed, and media/hls.h for why the two differ).
+ *    hls_muxed, and media/hls.h for why the two differ), or
+ *  - a finished download: an MP4 on the memory card (media/local_stream.h).
+ *    No network is involved at all, so none of the HLS or quality-switch
+ *    machinery applies to it — it is never prepared in the background and has
+ *    no stream-level cancel flag to repoint.
  * The decoder captures the factory addresses, so a PlayerSource must live in
  * stable storage for the whole playback — never a stack temporary. */
 typedef struct {
     int is_hls;
+    int is_local;
     /* The chosen HLS variant carries both streams in one playlist, so
      * hls_audio is unused and hls_video serves both decoder cursors. */
     int hls_muxed;
     VtRemoteStreamFactory remote;
     VtHlsStreamFactory hls_video;
     VtHlsStreamFactory hls_audio;
+    VtLocalStreamFactory local;
 } PlayerSource;
 
 /* url is a media URL, or an HLS master playlist URL when is_hls. max_fps
@@ -62,6 +69,9 @@ typedef struct {
  * vt_hls_pick; live streams pass 30 because their 720p is usually 60. */
 int player_source_init(PlayerSource *source, const char *url, int is_hls,
                        int max_fps, volatile int *cancel);
+/* A downloaded file on the memory card. Returns 0, -1 for a path that does not
+ * fit; whether the file is any good is for the decoder's open to say. */
+int player_source_init_local(PlayerSource *source, const char *path);
 void player_source_term(PlayerSource *source);
 /* Fills in the stream fields of a decoder config from this source. */
 void player_source_apply(const PlayerSource *source,
@@ -80,6 +90,15 @@ int open_direct_blocking_at(const yt_stream_t *stream, int fmt_index,
                             volatile int *cancel,
                             PlayerSource *source_out,
                             VtDecoderPlayer **player_out);
+
+/* Blocking open of a downloaded file, with the spinner (it is the first open of
+ * the playback, before anything has been drawn). No resolve, no network: the
+ * file is read straight off the card. Returns 0 ok, <0 fail (the file would not
+ * open or the decoder refused it), and also <0 with *cancel set when Circle
+ * ended the wait. */
+int open_local_blocking(const char *path, int volume, int start_paused,
+                        volatile int *cancel, PlayerSource *source_out,
+                        VtDecoderPlayer **player_out);
 
 /* volume/start_paused are the viewer's current settings, so a reopen (live
  * recovery) keeps them instead of coming back at 100 % and playing. */
