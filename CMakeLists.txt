@@ -75,6 +75,8 @@ add_executable(${PROJECT_NAME}
   src/yt/region.c
   src/media/vita_decoder.c
   src/media/remote_stream.c
+  src/media/local_stream.c
+  src/media/local_stream_sce.c
   src/media/hls.c
   src/ui/ui.c
   src/ui/thai_shape.c
