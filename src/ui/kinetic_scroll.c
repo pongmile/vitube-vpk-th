@@ -212,7 +212,13 @@ int vt_kinetic_touch(VtKineticScroll *k, unsigned flags, int x, int y,
      * which is a few pixels while the finger is already moving, and from
      * then on it is glued to it. */
     float raw = k->raw_at_down + (float)(k->down_y - y);
-    if (raw > k->max_offset) k->hit_end = 1;
+    /* Where the finger is NOW, not whether it ever went past the end: a pull
+     * past the end that the user then takes back, turning it into a fling
+     * towards the start, must not settle as "pushed past the end" — on the
+     * search results that would load the next page while the list comes to
+     * rest at the top. A release still past the end springs, and the spring
+     * sets this again by itself. */
+    k->hit_end = raw > k->max_offset;
     k->offset = banded(k, raw);
     return 0;
 }

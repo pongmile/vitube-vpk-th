@@ -288,6 +288,20 @@ int main(void) {
               (VT_KINETIC_SETTLED | VT_KINETIC_SETTLED_AT_END),
           "a pull past the end must read as one (load more)");
 
+    /* Past the end and then all the way back, flung towards the start: it
+     * comes to rest at the top, and that is not the end. */
+    vt_kinetic_jump(&k, k.max_offset);
+    frame(UI_TOUCH_EVENT_DOWN, 400, 300, NULL);
+    for (int i = 1; i <= 5; i++) frame(UI_TOUCH_EVENT_MOVE, 400, 300 - i * 10, NULL);
+    CHECK(k.offset > k.max_offset, "no pull past the end");
+    for (int i = 1; i <= 12; i++) frame(UI_TOUCH_EVENT_MOVE, 400, 250 + i * 30, NULL);
+    frame(UI_TOUCH_EVENT_UP, 400, 610, NULL);
+    CHECK(k.mode == VT_KINETIC_FLINGING && k.velocity < 0.0f,
+          "no fling towards the start: mode %d v %.1f", k.mode, k.velocity);
+    run_to_rest();
+    CHECK(vt_kinetic_take_settled(&k) == VT_KINETIC_SETTLED,
+          "a pull past the end that was taken back still read as the end");
+
     /* Catching the spring mid-way picks the content up where it is drawn. */
     vt_kinetic_jump(&k, 0.0f);
     frame(UI_TOUCH_EVENT_DOWN, 400, 50, NULL);
