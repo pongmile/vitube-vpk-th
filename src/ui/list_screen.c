@@ -918,7 +918,13 @@ void list_screen_run(void) {
                     ch->cursor = row;
                 }
             }
-            if (pressed & SCE_CTRL_CROSS) {
+            /* Cross with the selection carried off screen by a drag or a
+             * fling picks a row on screen, as a direction does (see
+             * cursor_into_view), instead of opening one the user cannot
+             * see. */
+            if ((pressed & SCE_CTRL_CROSS) &&
+                !cursor_into_view(&ch->scroll, &ch->cursor, ch->count,
+                                  CHANNEL_ROW_H)) {
                 run_channel_detail(&ch->items[ch->cursor]);
                 sceCtrlPeekBufferPositive(0, &previous, 1);
             }
@@ -984,7 +990,11 @@ void list_screen_run(void) {
                 load_more_search();
                 resync_input(&previous);
             }
-            if (pressed & SCE_CTRL_CROSS) {
+            /* Same as in the channel list: no playing a row that a drag or
+             * a fling has carried off screen. */
+            if ((pressed & SCE_CTRL_CROSS) &&
+                !cursor_into_view(&videos->scroll, &videos->cursor,
+                                  videos->count, ROW_H)) {
                 player_screen_run(&videos->items[videos->cursor]);
                 sceCtrlPeekBufferPositive(0, &previous, 1);
                 ui_touch_reset();
