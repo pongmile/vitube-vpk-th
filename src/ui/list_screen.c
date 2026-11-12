@@ -741,6 +741,13 @@ void list_screen_run(void) {
             if (got == 1) {
                 g_tab = TAB_SEARCH;
                 run_search(query);
+                /* Again after the search, not only after the keyboard: the
+                 * load can now sit on the reconnect screen for most of a
+                 * minute (ui/net_task.c), and a finger resting on the
+                 * screen when the results arrive would otherwise go down as
+                 * a fresh touch and its release tap row 0 — the selected
+                 * row, so the tap plays it. */
+                resync_input(&previous);
             }
         }
         if (!modal && (pressed & (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER))) {
@@ -913,7 +920,9 @@ void list_screen_run(void) {
             if (row >= 0) {
                 if (row == ch->cursor) {
                     run_channel_detail(&ch->items[row]);
-                    sceCtrlPeekBufferPositive(0, &previous, 1);
+                    /* Touch too, as for every load here: see the search
+                     * after Triangle above. */
+                    resync_input(&previous);
                 } else {
                     ch->cursor = row;
                 }
@@ -926,7 +935,7 @@ void list_screen_run(void) {
                 !cursor_into_view(&ch->scroll, &ch->cursor, ch->count,
                                   CHANNEL_ROW_H)) {
                 run_channel_detail(&ch->items[ch->cursor]);
-                sceCtrlPeekBufferPositive(0, &previous, 1);
+                resync_input(&previous);
             }
             /* run_channel_detail() may have just switched this tab to
              * VIEW_CHANNEL_DETAIL — recompute so the draw pass below shows
@@ -951,7 +960,7 @@ void list_screen_run(void) {
                     videos->cursor++;
                 } else if (videos == &g_search && videos->continuation[0]) {
                     load_more_search();
-                    sceCtrlPeekBufferPositive(0, &previous, 1);
+                    resync_input(&previous);
                     if (videos->cursor < videos->count - 1) videos->cursor++;
                 }
             }

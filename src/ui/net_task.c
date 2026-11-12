@@ -73,7 +73,15 @@ static int run_attempt(const char *label, const char *detail, VtTaskFn fn,
         unsigned pressed = ctrl.buttons & ~previous.buttons;
         previous = ctrl;
         int ending = *user_cancelled || *aborted;
-        if (cancel_flag && !ending && (pressed & SCE_CTRL_CIRCLE)) {
+        /* Circle still counts once the attempt is being cut off after a
+         * wake: the hint bar keeps promising it, and that cut-off can take
+         * a while — curl is built without the threaded resolver, so a DNS
+         * lookup on the still-dead network does not see the cancel flag
+         * until it times out. Ignoring the press there made the user press
+         * again on the reconnect screen. The flag is already 1 then, and
+         * user_cancelled makes vt_ui_run_net_task() leave it set, so the
+         * caller takes its normal "cancelled" path. */
+        if (cancel_flag && !*user_cancelled && (pressed & SCE_CTRL_CIRCLE)) {
             *cancel_flag = 1;
             *user_cancelled = 1;
         } else if (cancel_flag && !ending &&

@@ -16,6 +16,7 @@
 
 #include "app.h"
 #include "log.h"
+#include "net/netwatch.h"
 
 #define THUMB_SLOTS 48
 #define THUMB_KEY_MAX 32
@@ -55,6 +56,8 @@ typedef struct {
 #define THUMB_RETRY_TICKS 600
 
 static ThumbSlot g_slots[THUMB_SLOTS];
+/* vt_netwatch_generation() as of the last vt_thumbs_get(); see there. */
+static unsigned g_net_generation;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_worker;
 static volatile int g_running;
@@ -267,6 +270,20 @@ vita2d_texture *vt_thumbs_get(const char *key, const char *url) {
     vita2d_texture *texture = NULL;
     pthread_mutex_lock(&g_lock);
     g_tick++;
+    /* The console woke from suspend or the network came back: give every
+     * failed image a fresh retry budget. THUMB_MAX_ATTEMPTS tries are spaced
+     * by g_tick, i.e. by rows drawn, and with a handful of rows on screen
+     * that is about two seconds apart — so a list scrolled in the seconds
+     * after a wake, while the Wi-Fi is still re-associating, used up all
+     * three on a dead network and left those thumbnails black for the
+     * rest of the session, the list loads having meanwhile recovered by
+     * themselves (ui/net_task.c). */
+    unsigned generation = vt_netwatch_generation();
+    if (generation != g_net_generation) {
+        g_net_generation = generation;
+        for (int i = 0; i < THUMB_SLOTS; i++)
+            if (g_slots[i].state == SLOT_FAILED) g_slots[i].attempts = 0;
+    }
     ThumbSlot *victim = NULL;
     unsigned oldest = 0xFFFFFFFFu;
     int found = 0;
