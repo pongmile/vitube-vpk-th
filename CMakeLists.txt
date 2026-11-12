@@ -84,6 +84,7 @@ add_executable(${PROJECT_NAME}
   src/ui/kinetic_scroll.c
   src/ui/dl_format.c
   src/ui/rows_view.c
+  src/ui/downloads_screen.c
   src/ui/list_screen.c
   src/ui/net_task.c
   src/ui/player_screen.c
