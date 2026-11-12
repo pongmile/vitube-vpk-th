@@ -2,6 +2,7 @@
 #include "ui/rows_view.h"
 
 #include "app.h"
+#include "ui/downloads_screen.h"
 #include "ui/thumbs.h"
 #include "ui/strings.h"
 #include "ui/ui.h"
@@ -56,6 +57,9 @@ void draw_video_row(const yt_video_t *video, int y, int selected,
         vt_ui_text(tx + THUMB_W - dw - 6, ty + THUMB_H - 23, VT_COLOR_TEXT,
                    0.75f, video->duration);
     }
+    /* Top-left corner, the one the duration is not in: a check for a video
+     * that is downloaded, an arrow for one that is queued or on its way. */
+    downloads_draw_badge(tx + 6, ty + 6, downloads_badge(video->video_id));
     int text_x = tx + THUMB_W + 16;
     int text_w = VT_SCREEN_W - text_x - 24;
     begin_column(text_x, text_w, clip_top, clip_bottom);

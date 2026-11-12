@@ -1,4 +1,5 @@
-/* ViTube — app shell: Start / Suche / Abos tabs, channel drill-in.
+/* ViTube — app shell: Start / Suche / Abos / Downloads / Mehr tabs, channel
+ * drill-in.
  *
  * There is no in-app "quit" — the Vita's HOME button suspends/closes the
  * app the normal way, so this loop only ever returns by falling out of
@@ -14,8 +15,10 @@
 #include <psp2/kernel/processmgr.h>
 
 #include "app.h"
+#include "dl/dl.h"
 #include "net/netwatch.h"
 #include "ui/net_task.h"
+#include "ui/downloads_screen.h"
 #include "ui/kinetic_scroll.h"
 #include "ui/player_screen.h"
 #include "ui/rows_view.h"
@@ -72,7 +75,11 @@ static void list_scroll_reset(ListScroll *s) {
     memset(s, 0, sizeof *s);
 }
 
-typedef enum { TAB_HOME = 0, TAB_SEARCH, TAB_ABOS, TAB_MORE, TAB_COUNT } AppTab;
+/* TAB_DL is the one tab with a single view and none of the lists below: its
+ * rows, scrolling, menu and input are all in downloads_screen.c. */
+typedef enum {
+    TAB_HOME = 0, TAB_SEARCH, TAB_ABOS, TAB_DL, TAB_MORE, TAB_COUNT
+} AppTab;
 /* Every tab is in one of three views, and both Suche and Abos start on their
  * video list with Square flipping to the channels: the search hits, or the
  * subscribed channels. The channel detail is entered from either tab's
@@ -117,7 +124,7 @@ static AppTab g_tab = TAB_HOME;
  * channel list. It also means the feed is already loaded by the time the
  * channel list is sorted by most recent upload, which is derived from it. */
 static ListView g_view[TAB_COUNT] = { VIEW_VIDEOS, VIEW_VIDEOS, VIEW_VIDEOS,
-                                      VIEW_VIDEOS };
+                                      VIEW_VIDEOS, VIEW_VIDEOS };
 static VideoListState g_home, g_search, g_abos_feed, g_channel_videos;
 /* Filled from the store when the view is entered, so the rest of this
  * screen — cursor, scrolling, touch, playing — needs to know nothing
@@ -546,6 +553,7 @@ static void resync_input(SceCtrlData *previous) {
 
 static VideoListState *active_video_list(void) {
     if (g_tab == TAB_MORE) return NULL; /* settings rows, not videos */
+    if (g_tab == TAB_DL) return NULL;   /* download rows, not videos */
     if (g_view[g_tab] == VIEW_CHANNEL_DETAIL) return &g_channel_videos;
     if (g_view[g_tab] == VIEW_HISTORY) return &g_history;
     if (g_view[g_tab] == VIEW_SEARCHES) return NULL; /* query strings */
@@ -712,6 +720,45 @@ static int list_scroll_step(ListScroll *s, int *cursor, int *top, int count,
     return tapped;
 }
 
+/* The tab bar's labels and count bubbles. The Downloads tab shows how many
+ * items are unfinished and not stopped, so a download left running is
+ * visible from every other tab. */
+static void tab_bar_content(const char **labels, int *badges) {
+    for (int i = 0; i < TAB_COUNT; i++) badges[i] = 0;
+    labels[TAB_HOME] = vt_str(S_TAB_HOME);
+    labels[TAB_SEARCH] = vt_str(S_TAB_SEARCH);
+    labels[TAB_ABOS] = vt_str(S_TAB_SUBS);
+    labels[TAB_DL] = vt_str(S_TAB_DOWNLOADS);
+    labels[TAB_MORE] = vt_str(S_TAB_MORE);
+    badges[TAB_DL] = dl_active_count();
+}
+
+/* Leaves the current tab for `target` and loads what that tab needs. L1/R1,
+ * a tap on the tab bar and "Open in Downloads" all come through here, so none
+ * of them can differ in what entering a tab does. */
+static void switch_tab(AppTab target, SceCtrlData *previous) {
+    if (g_view[g_tab] == VIEW_CHANNEL_DETAIL)
+        g_view[g_tab] = VIEW_CHANNELS;
+    g_tab = target;
+    int fetched = 0;
+    if (g_tab == TAB_HOME && !g_home.loaded) {
+        run_home();
+        fetched = 1;
+    }
+    if (g_tab == TAB_ABOS && g_view[TAB_ABOS] == VIEW_CHANNELS &&
+        !g_channels.loaded) {
+        run_channels();
+        fetched = 1;
+    }
+    if (g_tab == TAB_ABOS && g_view[TAB_ABOS] == VIEW_VIDEOS &&
+        !g_abos_feed.loaded) {
+        run_abos_feed();
+        fetched = 1;
+    }
+    if (g_tab == TAB_DL) downloads_screen_enter();
+    if (fetched) resync_input(previous);
+}
+
 void list_screen_run(void) {
     SceCtrlData ctrl, previous = {0};
     sceCtrlPeekBufferPositive(0, &previous, 1);
@@ -730,7 +777,8 @@ void list_screen_run(void) {
         /* A picker inside the Mehr tab owns the buttons while it is open;
          * without this, Triangle would open the search keyboard and L1/R1
          * would change tabs straight through it. */
-        int modal = g_tab == TAB_MORE && settings_screen_modal();
+        int modal = (g_tab == TAB_MORE && settings_screen_modal()) ||
+                    downloads_menu_active();
 
         if (!modal && (pressed & SCE_CTRL_TRIANGLE)) {
             char query[256];
@@ -750,28 +798,23 @@ void list_screen_run(void) {
                 resync_input(&previous);
             }
         }
-        if (!modal && (pressed & (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER))) {
-            if (g_view[g_tab] == VIEW_CHANNEL_DETAIL)
-                g_view[g_tab] = VIEW_CHANNELS;
-            g_tab = (AppTab)((g_tab + (pressed & SCE_CTRL_RTRIGGER ? 1
-                                                                   : TAB_COUNT - 1))
-                             % TAB_COUNT);
-            int fetched = 0;
-            if (g_tab == TAB_HOME && !g_home.loaded) {
-                run_home();
-                fetched = 1;
-            }
-            if (g_tab == TAB_ABOS && g_view[TAB_ABOS] == VIEW_CHANNELS &&
-                !g_channels.loaded) {
-                run_channels();
-                fetched = 1;
-            }
-            if (g_tab == TAB_ABOS && g_view[TAB_ABOS] == VIEW_VIDEOS &&
-                !g_abos_feed.loaded) {
-                run_abos_feed();
-                fetched = 1;
-            }
-            if (fetched) resync_input(&previous);
+        if (!modal && (pressed & (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER)))
+            switch_tab((AppTab)((g_tab + (pressed & SCE_CTRL_RTRIGGER
+                                              ? 1 : TAB_COUNT - 1)) %
+                                TAB_COUNT),
+                       &previous);
+        /* A tap on a tab. Judged by where the finger came DOWN: it may have
+         * drifted a few pixels by the time it lifted, and the bar is thin. A
+         * touch that began on the bar is outside every list's viewport, so
+         * the scrolling code never saw it. */
+        if (!modal && (touch_flags & UI_TOUCH_EVENT_TAP)) {
+            const char *labels[TAB_COUNT];
+            int badges[TAB_COUNT];
+            tab_bar_content(labels, badges);
+            int hit = vt_ui_tab_hit(labels, badges, TAB_COUNT, touch.down_x,
+                                    touch.down_y);
+            if (hit >= 0 && hit != (int)g_tab)
+                switch_tab((AppTab)hit, &previous);
         }
         if (g_view[g_tab] == VIEW_CHANNEL_DETAIL) {
             /* Circle returns to the channel list of the tab this was opened
@@ -834,13 +877,30 @@ void list_screen_run(void) {
                             NULL, 60);
             }
         }
-        /* A shortcut to the tab, not to the login screen: signing in is one
-         * row inside it now, next to the settings that used to have no home
-         * at all. */
+        /* On a video row SELECT is that row's download menu: of the buttons,
+         * only this one means nothing else in any of the video lists (Square
+         * flips views or subscribes, START switches to the history, Triangle
+         * searches). The Mehr tab is still one L1/R1 away, and SELECT still
+         * goes there from every screen that has no row to ask about. On the
+         * Downloads tab the same button opens the menu of the selected
+         * download, which downloads_screen_input() handles itself.
+         *
+         * A selection a drag or fling carried off screen is brought back
+         * first and uses up the press, as Cross does for playing. */
         if (!modal && (pressed & SCE_CTRL_SELECT)) {
-            if (g_view[g_tab] == VIEW_CHANNEL_DETAIL)
-                g_view[g_tab] = VIEW_CHANNELS;
-            g_tab = TAB_MORE;
+            VideoListState *rows = active_video_list();
+            if (rows && rows->count > 0) {
+                if (!cursor_into_view(&rows->scroll, &rows->cursor,
+                                      rows->count, ROW_H))
+                    downloads_menu_open_video(&rows->items[rows->cursor]);
+            } else if (!(g_tab == TAB_DL && downloads_screen_count() > 0)) {
+                /* A shortcut to the tab, not to the login screen: signing in
+                 * is one row inside it now, next to the settings that used
+                 * to have no home at all. */
+                if (g_view[g_tab] == VIEW_CHANNEL_DETAIL)
+                    g_view[g_tab] = VIEW_CHANNELS;
+                g_tab = TAB_MORE;
+            }
         }
 
         if (g_view[g_tab] == VIEW_HISTORY &&
@@ -868,7 +928,19 @@ void list_screen_run(void) {
         ChannelListState *channels = active_channel_list();
         VideoListState *videos = active_video_list();
 
-        if (g_tab == TAB_MORE) {
+        if (downloads_menu_active()) {
+            /* Before the tab it was opened over: while it is up it owns the
+             * buttons and the touch panel, wherever it came from. */
+            DlMenuResult chosen = downloads_menu_input(pressed, direction,
+                                                       touch_flags, &touch);
+            if (chosen == DLM_RESYNC) resync_input(&previous);
+            else if (chosen == DLM_OPEN_DOWNLOADS)
+                switch_tab(TAB_DL, &previous);
+        } else if (g_tab == TAB_DL) {
+            if (downloads_screen_input(pressed, direction, touch_flags, &touch,
+                                       LIST_Y, LIST_BOTTOM))
+                resync_input(&previous);
+        } else if (g_tab == TAB_MORE) {
             SettingsResult settings = settings_screen_input(pressed, direction);
             if (pressed & SCE_CTRL_CROSS) {
                 /* Whatever that row did may have run its own input loop and
@@ -1014,10 +1086,9 @@ void list_screen_run(void) {
 
         vita2d_start_drawing();
         vita2d_clear_screen();
-        const char *TAB_LABELS[TAB_COUNT] = {
-            vt_str(S_TAB_HOME), vt_str(S_TAB_SEARCH), vt_str(S_TAB_SUBS),
-            vt_str(S_TAB_MORE)
-        };
+        const char *TAB_LABELS[TAB_COUNT];
+        int tab_badges[TAB_COUNT];
+        tab_bar_content(TAB_LABELS, tab_badges);
         char subtitle[300] = {0};
         /* Most specific view first: the tab-level TAB_SEARCH default below
          * would otherwise win over the recent-searches header once any
@@ -1037,11 +1108,13 @@ void list_screen_run(void) {
             snprintf(subtitle, sizeof subtitle, "%s",
                      vt_str(S_RECENTLY_WATCHED));
         vt_ui_top_bar(subtitle, yt_oauth_logged_in());
-        vt_ui_tab_bar(TAB_LABELS, TAB_COUNT, g_tab);
+        vt_ui_tab_bar_badged(TAB_LABELS, tab_badges, TAB_COUNT, g_tab);
 
         vita2d_enable_clipping();
         vita2d_set_clip_rectangle(0, LIST_Y, VT_SCREEN_W, VT_SCREEN_H - HINT_H);
-        if (g_tab == TAB_MORE) {
+        if (g_tab == TAB_DL) {
+            downloads_screen_draw(LIST_Y, LIST_BOTTOM);
+        } else if (g_tab == TAB_MORE) {
             settings_screen_draw(LIST_Y);
         } else if (channels) {
             if (channels->count == 0) {
@@ -1114,13 +1187,24 @@ void list_screen_run(void) {
             }
         }
         vita2d_disable_clipping();
+        downloads_snackbar_draw(LIST_BOTTOM);
+        /* Over everything above, so the dimming also covers the bars; the
+         * hint bar below is drawn after it and stays readable. */
+        downloads_menu_draw();
 
+        /* Rows to ask about: the hints of the video lists name SELECT as the
+         * download menu only when there is a row for it to open on. */
+        int rows_focus = videos && !channels && videos->count > 0;
         char hint_buf[160];
         const char *hint;
-        if (g_tab == TAB_MORE)
+        if (downloads_menu_active())
+            hint = vt_str(S_HINT_SETTINGS_MODAL);
+        else if (g_tab == TAB_DL)
+            hint = downloads_screen_hint(hint_buf, sizeof hint_buf);
+        else if (g_tab == TAB_MORE)
             hint = settings_screen_hint();
         else if (g_view[g_tab] == VIEW_HISTORY)
-            hint = vt_str(S_HINT_HISTORY);
+            hint = vt_str(rows_focus ? S_HINT_HISTORY_DL : S_HINT_HISTORY);
         else if (g_view[g_tab] == VIEW_SEARCHES)
             hint = vt_str(vt_store_search_count() > 0 ? S_HINT_SEARCHES_VIEW
                                                      : S_HINT_SEARCHES_EMPTY);
@@ -1128,9 +1212,14 @@ void list_screen_run(void) {
          * channel hits but no videos leaves g_search.count at 0, and the
          * channel opened from it would otherwise get the "search again"
          * legend while Cross plays and Square subscribes. */
-        else if (g_view[g_tab] == VIEW_CHANNEL_DETAIL)
-            hint = vt_str(subscription_index(g_channel.channel_id) >= 0
-                              ? S_HINT_CHANNEL_UNSUB : S_HINT_CHANNEL_SUB);
+        else if (g_view[g_tab] == VIEW_CHANNEL_DETAIL) {
+            int subscribed = subscription_index(g_channel.channel_id) >= 0;
+            hint = vt_str(rows_focus
+                              ? (subscribed ? S_HINT_CHANNEL_UNSUB_DL
+                                            : S_HINT_CHANNEL_SUB_DL)
+                              : (subscribed ? S_HINT_CHANNEL_UNSUB
+                                            : S_HINT_CHANNEL_SUB));
+        }
         else if (g_tab == TAB_SEARCH && g_view[TAB_SEARCH] == VIEW_VIDEOS &&
                  !channels && g_search.count == 0 &&
                  vt_store_search_count() > 0)
@@ -1139,17 +1228,20 @@ void list_screen_run(void) {
             hint = vt_str(S_HINT_SEARCH_CHANNELS);
         else if (g_tab == TAB_SEARCH) {
             snprintf(hint_buf, sizeof hint_buf,
-                     vt_str(S_HINT_SEARCH_VIDEOS), g_search_channels.count);
+                     vt_str(rows_focus ? S_HINT_SEARCH_VIDEOS_DL
+                                       : S_HINT_SEARCH_VIDEOS),
+                     g_search_channels.count);
             hint = hint_buf;
         } else if (channels)
             hint = vt_str(channels_sort() == CH_SORT_RECENT
                               ? S_HINT_SUBS_CHANNELS_RECENT
                               : S_HINT_SUBS_CHANNELS_ALPHA);
         else if (g_tab == TAB_ABOS)
-            hint = vt_str(S_HINT_SUBS_VIDEOS);
+            hint = vt_str(rows_focus ? S_HINT_SUBS_VIDEOS_DL
+                                     : S_HINT_SUBS_VIDEOS);
         /* TAB_HOME falls through to the generic hint below. */
         else
-            hint = vt_str(S_HINT_HOME);
+            hint = vt_str(rows_focus ? S_HINT_HOME_DL : S_HINT_HOME);
         vt_ui_hint_bar(hint);
 
         vita2d_end_drawing();
