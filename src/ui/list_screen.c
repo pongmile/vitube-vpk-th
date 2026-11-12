@@ -16,6 +16,7 @@
 #include "app.h"
 #include "net/netwatch.h"
 #include "ui/net_task.h"
+#include "ui/kinetic_scroll.h"
 #include "ui/player_screen.h"
 #include "ui/rows_view.h"
 #include "store.h"
@@ -35,8 +36,29 @@
 #define TAB_BAR_H 34
 #define LIST_Y (TOP_BAR_H + TAB_BAR_H)
 #define HINT_H 36
+/* The band the lists scroll in: from under the tab bar to the hint bar. */
+#define LIST_BOTTOM (VT_SCREEN_H - HINT_H)
+#define LIST_H (LIST_BOTTOM - LIST_Y)
+/* How far Left/Right page the cursor. */
 #define VISIBLE_ROWS 4
-#define VISIBLE_CHANNEL_ROWS 5
+
+/* Where a list is scrolled to, by the pixel (see kinetic_scroll.h), plus
+ * what list_scroll_step() last wrote back into the list's row-granular
+ * `cursor` and `top` — which is how a change made to either from outside
+ * the scroll code is noticed:
+ *
+ * - `top` stays the index of the first row in view, kept up to date every
+ *   frame. Code that resets a list (a new search, a reload, a re-sort) still
+ *   just writes `top = 0`, and that is honoured as "scroll there", so none of
+ *   it needed to learn about pixels.
+ * - A `cursor` that moved since the last frame (buttons, a tap, a reset) is
+ *   eased into view. Touch scrolling deliberately does not move the cursor
+ *   while the list is in motion; see list_scroll_step(). */
+typedef struct {
+    VtKineticScroll kinetic;
+    int synced_top;
+    int synced_cursor;
+} ListScroll;
 
 typedef enum { TAB_HOME = 0, TAB_SEARCH, TAB_ABOS, TAB_MORE, TAB_COUNT } AppTab;
 /* Every tab is in one of three views, and both Suche and Abos start on their
@@ -62,8 +84,9 @@ typedef struct {
     int count;
     char continuation[YT_CONTINUATION_MAX];
     int cursor;
-    int top;
+    int top; /* first row in view — see ListScroll */
     int loaded; /* has a fetch ever completed (successfully or not) */
+    ListScroll scroll;
 } VideoListState;
 
 typedef struct {
@@ -71,8 +94,9 @@ typedef struct {
     int count;
     char continuation[YT_CONTINUATION_MAX];
     int cursor;
-    int top;
+    int top; /* first row in view — see ListScroll */
     int loaded;
+    ListScroll scroll;
 } ChannelListState;
 
 static AppTab g_tab = TAB_HOME;
@@ -559,6 +583,116 @@ static void drop_account_data(void) {
      * behind a settings screen the user is still looking at. */
 }
 
+/* --- scrolling ---------------------------------------------------------- */
+
+/* Rows [*first, *last] lie wholly inside the band as it is drawn right now.
+ * The band (430 px) is taller than any row, so for a non-empty list there is
+ * always at least one. */
+static void full_rows(const ListScroll *s, int row_h, int count, int *first,
+                      int *last) {
+    int off = vt_kinetic_draw_offset(&s->kinetic);
+    int f = off > 0 ? (off + row_h - 1) / row_h : 0;
+    int l = (off + LIST_H) / row_h - 1;
+    if (l > count - 1) l = count - 1;
+    if (f > l) f = l;
+    if (f < 0) f = 0;
+    *first = f;
+    *last = l < f ? f : l;
+}
+
+/* No part of the cursor's row is in the band. A row that is merely cut off
+ * at an edge still counts as on screen: with touch, the selection is "the
+ * row I tapped, which a second tap opens", and nudging the list by a few
+ * pixels must not quietly hand that to the neighbouring row. */
+static int cursor_off_screen(const ListScroll *s, int cursor, int row_h) {
+    int off = vt_kinetic_draw_offset(&s->kinetic);
+    return (cursor + 1) * row_h <= off || cursor * row_h >= off + LIST_H;
+}
+
+/* Moves an off-screen cursor to the nearest row that is wholly on screen.
+ * Returns 1 if it had to. */
+static int cursor_onto_screen(const ListScroll *s, int *cursor, int count,
+                              int row_h) {
+    if (!cursor_off_screen(s, *cursor, row_h)) return 0;
+    int first, last;
+    full_rows(s, row_h, count, &first, &last);
+    *cursor = *cursor < first ? first : last;
+    return 1;
+}
+
+/* The first press of a direction after the list was flung away from the
+ * cursor picks a row on screen instead of moving relative to one that is
+ * not: otherwise Down would scroll the list all the way back to where the
+ * fling started, which reads as the fling being undone. Returns 1 if it did
+ * (and the press is used up).
+ *
+ * Not while an eased scroll runs: a row on its way into view is the D-pad's
+ * own motion, and pressing again during it must simply move on from it. */
+static int cursor_into_view(ListScroll *s, int *cursor, int count, int row_h) {
+    if (s->kinetic.mode == VT_KINETIC_EASING) return 0;
+    return cursor_onto_screen(s, cursor, count, row_h);
+}
+
+/* One frame of a list's scrolling: honours outside writes to `top` and
+ * `cursor`, feeds the touch event, advances the motion, and writes `top`
+ * back. Called every frame the list is on screen, after the buttons have
+ * moved the cursor and before drawing.
+ *
+ * Returns the row a tap landed on, or -1. What a tap does is the caller's
+ * (select, or open the row that already was selected — as before).
+ * *settled gets the VT_KINETIC_SETTLED* bits of a touch-driven motion that
+ * came to rest this frame.
+ *
+ * The cursor is left alone while the finger or a fling is moving the list.
+ * Dragging the selection along, or snapping the list back to it, is exactly
+ * the "the list fights my finger" this replaced. Only once everything is
+ * still is a cursor that ended up off screen moved onto it, so the next
+ * button press starts from something visible (and Cross cannot play a video
+ * the user is not looking at).
+ *
+ * That makes "a list at rest has its cursor on screen" an invariant, and it
+ * is enforced as one: a resting list with its cursor elsewhere can only have
+ * been put there from outside, so the cursor's row is eased in. */
+static int list_scroll_step(ListScroll *s, int *cursor, int *top, int count,
+                            int row_h, unsigned touch_flags,
+                            const UiTouchEvent *touch, unsigned *settled) {
+    VtKineticScroll *k = &s->kinetic;
+    uint64_t now = sceKernelGetProcessTimeWide();
+    vt_kinetic_set_bounds(k, (float)LIST_H, (float)(count * row_h));
+    if (*top != s->synced_top) vt_kinetic_jump(k, (float)(*top * row_h));
+
+    int tapped = -1, tap_y = 0;
+    if (vt_kinetic_touch(k, touch_flags, touch->x, touch->y - LIST_Y, now,
+                         &tap_y) &&
+        tap_y >= 0 && tap_y / row_h < count)
+        tapped = tap_y / row_h;
+    /* A release that stopped the list (no fling) settles right here; pull
+     * the cursor on screen BEFORE the invariant below looks at it, or that
+     * would ease the list straight back to the old cursor — undoing the
+     * drag the moment the finger lifts. */
+    *settled = vt_kinetic_take_settled(k);
+    if (*settled) cursor_onto_screen(s, cursor, count, row_h);
+
+    if (*cursor != s->synced_cursor ||
+        (k->mode == VT_KINETIC_IDLE && cursor_off_screen(s, *cursor, row_h)))
+        vt_kinetic_ensure_visible(k, (float)(*cursor * row_h),
+                                  (float)((*cursor + 1) * row_h));
+    vt_kinetic_update(k, now);
+
+    /* ...and a fling or spring that ran out during this update. */
+    unsigned late = vt_kinetic_take_settled(k);
+    if (late) cursor_onto_screen(s, cursor, count, row_h);
+    *settled |= late;
+    s->synced_cursor = *cursor;
+
+    int off = vt_kinetic_draw_offset(k);
+    int t = off > 0 ? off / row_h : 0;
+    if (t > count - 1) t = count - 1;
+    if (t < 0) t = 0;
+    *top = s->synced_top = t;
+    return tapped;
+}
+
 void list_screen_run(void) {
     SceCtrlData ctrl, previous = {0};
     sceCtrlPeekBufferPositive(0, &previous, 1);
@@ -746,23 +880,23 @@ void list_screen_run(void) {
             }
         } else if (channels && channels->count > 0) {
             ChannelListState *ch = channels;
+            if (direction &&
+                cursor_into_view(&ch->scroll, &ch->cursor, ch->count,
+                                 CHANNEL_ROW_H))
+                direction = 0;
             if (direction & SCE_CTRL_UP && ch->cursor > 0) ch->cursor--;
             if (direction & SCE_CTRL_DOWN && ch->cursor < ch->count - 1)
                 ch->cursor++;
-            if (ch->cursor < ch->top) ch->top = ch->cursor;
-            if (ch->cursor >= ch->top + VISIBLE_CHANNEL_ROWS)
-                ch->top = ch->cursor - VISIBLE_CHANNEL_ROWS + 1;
-            if (touch_flags & UI_TOUCH_EVENT_TAP && touch.y >= LIST_Y &&
-                touch.y < LIST_Y + VISIBLE_CHANNEL_ROWS * CHANNEL_ROW_H &&
-                touch.y < VT_SCREEN_H - HINT_H) {
-                int row = ch->top + (touch.y - LIST_Y) / CHANNEL_ROW_H;
-                if (row < ch->count) {
-                    if (row == ch->cursor) {
-                        run_channel_detail(&ch->items[row]);
-                        sceCtrlPeekBufferPositive(0, &previous, 1);
-                    } else {
-                        ch->cursor = row;
-                    }
+            unsigned settled;
+            int row = list_scroll_step(&ch->scroll, &ch->cursor, &ch->top,
+                                       ch->count, CHANNEL_ROW_H, touch_flags,
+                                       &touch, &settled);
+            if (row >= 0) {
+                if (row == ch->cursor) {
+                    run_channel_detail(&ch->items[row]);
+                    sceCtrlPeekBufferPositive(0, &previous, 1);
+                } else {
+                    ch->cursor = row;
                 }
             }
             if (pressed & SCE_CTRL_CROSS) {
@@ -782,6 +916,10 @@ void list_screen_run(void) {
             run_home();
             resync_input(&previous);
         } else if (!channels && videos && videos->count > 0) {
+            if (direction &&
+                cursor_into_view(&videos->scroll, &videos->cursor,
+                                 videos->count, ROW_H))
+                direction = 0;
             if (direction & SCE_CTRL_UP && videos->cursor > 0) videos->cursor--;
             if (direction & SCE_CTRL_DOWN) {
                 if (videos->cursor < videos->count - 1) {
@@ -801,39 +939,31 @@ void list_screen_run(void) {
                 videos->cursor -= VISIBLE_ROWS;
                 if (videos->cursor < 0) videos->cursor = 0;
             }
-            if (videos->cursor < videos->top) videos->top = videos->cursor;
-            if (videos->cursor >= videos->top + VISIBLE_ROWS)
-                videos->top = videos->cursor - VISIBLE_ROWS + 1;
 
-            if (touch_flags & UI_TOUCH_EVENT_TAP && touch.y >= LIST_Y &&
-                touch.y < LIST_Y + VISIBLE_ROWS * ROW_H &&
-                touch.y < VT_SCREEN_H - HINT_H) {
-                int row = videos->top + (touch.y - LIST_Y) / ROW_H;
-                if (row < videos->count) {
-                    if (row == videos->cursor) {
-                        player_screen_run(&videos->items[row]);
-                        sceCtrlPeekBufferPositive(0, &previous, 1);
-                        ui_touch_reset();
-                    } else {
-                        videos->cursor = row;
-                    }
+            /* This used to be where touch scrolling happened: on release, a
+             * drag of more than 36 px either way moved `top` by three whole
+             * rows, so nothing followed the finger and every swipe ended in
+             * the same jump. All of that is list_scroll_step() now. */
+            unsigned settled;
+            int row = list_scroll_step(&videos->scroll, &videos->cursor,
+                                       &videos->top, videos->count, ROW_H,
+                                       touch_flags, &touch, &settled);
+            if (row >= 0) {
+                if (row == videos->cursor) {
+                    player_screen_run(&videos->items[row]);
+                    sceCtrlPeekBufferPositive(0, &previous, 1);
+                    ui_touch_reset();
+                } else {
+                    videos->cursor = row;
                 }
-            }
-            if (touch_flags & UI_TOUCH_EVENT_UP &&
-                !(touch_flags & UI_TOUCH_EVENT_TAP)) {
-                int dy = touch.y - touch.down_y;
-                if (dy < -36) {
-                    videos->top += VISIBLE_ROWS - 1;
-                    if (videos->top > videos->count - VISIBLE_ROWS)
-                        videos->top = videos->count - VISIBLE_ROWS;
-                    if (videos->top < 0) videos->top = 0;
-                } else if (dy > 36) {
-                    videos->top -= VISIBLE_ROWS - 1;
-                    if (videos->top < 0) videos->top = 0;
-                }
-                if (videos->cursor < videos->top) videos->cursor = videos->top;
-                if (videos->cursor >= videos->top + VISIBLE_ROWS)
-                    videos->cursor = videos->top + VISIBLE_ROWS - 1;
+            } else if ((settled & VT_KINETIC_SETTLED_AT_END) &&
+                       videos == &g_search && videos->continuation[0]) {
+                /* The touch side of the D-pad's "Down on the last row loads
+                 * the next page": flinging into the end of the results, or
+                 * pulling up past it, asks for more. Only once the list is
+                 * at rest, so the spinner does not cut the bounce off. */
+                load_more_search();
+                resync_input(&previous);
             }
             if (pressed & SCE_CTRL_CROSS) {
                 player_screen_run(&videos->items[videos->cursor]);
@@ -885,12 +1015,15 @@ void list_screen_run(void) {
                 vt_ui_text((VT_SCREEN_W - w) / 2, LIST_Y + 100, VT_COLOR_MUTED,
                           1.0f, msg);
             } else {
-                for (int i = channels->top;
-                     i < channels->count && i < channels->top + VISIBLE_CHANNEL_ROWS + 1;
-                     i++)
-                    draw_channel_row(&channels->items[i],
-                                     LIST_Y + (i - channels->top) * CHANNEL_ROW_H,
-                                     i == channels->cursor);
+                int off = vt_kinetic_draw_offset(&channels->scroll.kinetic);
+                for (int i = off > 0 ? off / CHANNEL_ROW_H : 0;
+                     i < channels->count; i++) {
+                    int y = LIST_Y + i * CHANNEL_ROW_H - off;
+                    if (y >= LIST_BOTTOM) break;
+                    draw_channel_row(&channels->items[i], y,
+                                     i == channels->cursor, LIST_Y,
+                                     LIST_BOTTOM);
+                }
             }
         } else if (showing_recent_searches()) {
             int n = vt_store_search_count();
@@ -932,11 +1065,15 @@ void list_screen_run(void) {
             vt_ui_text((VT_SCREEN_W - w) / 2, LIST_Y + 100, VT_COLOR_MUTED,
                       1.1f, empty);
         } else if (videos) {
-            for (int i = videos->top;
-                 i < videos->count && i < videos->top + VISIBLE_ROWS + 1; i++)
-                draw_video_row(&videos->items[i],
-                              LIST_Y + (i - videos->top) * ROW_H,
-                              i == videos->cursor);
+            /* Every row that overlaps the band, at the same whole-pixel
+             * offset the touch code hit-tests against. */
+            int off = vt_kinetic_draw_offset(&videos->scroll.kinetic);
+            for (int i = off > 0 ? off / ROW_H : 0; i < videos->count; i++) {
+                int y = LIST_Y + i * ROW_H - off;
+                if (y >= LIST_BOTTOM) break;
+                draw_video_row(&videos->items[i], y, i == videos->cursor,
+                               LIST_Y, LIST_BOTTOM);
+            }
         }
         vita2d_disable_clipping();
 

@@ -13,7 +13,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "ViTube")
 set(VITA_TITLEID  "VTUB00001")
-set(VITA_VERSION  "02.00")
+set(VITA_VERSION  "02.01")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -81,6 +81,7 @@ add_executable(${PROJECT_NAME}
   src/ui/touch.c
   src/ui/text_input.c
   src/ui/thumbs.c
+  src/ui/kinetic_scroll.c
   src/ui/rows_view.c
   src/ui/list_screen.c
   src/ui/net_task.c
