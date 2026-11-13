@@ -2212,6 +2212,49 @@ static void test_report_bad_file_and_local_path(void) {
     run(w, 600000);
     CHECK(item(w, ID_A).state == DL_DONE && file_equals_src(w, ID_A, "mp4"), "fetched again");
     world_free(w);
+
+    /* The player's report outlives a restart. The unplayable .mp4 stays on
+     * the card until the retry, and its size still matches the entry, which
+     * is exactly what makes a crashed-after-rename entry count as finished:
+     * the reconcile at start-up must not mistake the one for the other, or
+     * the broken file is offered as a finished download after every
+     * restart. */
+    w = world_new();
+    core_new(w);
+    download_all(w, ID_A);
+    dl_core_report_bad_file(w->core, ID_A);
+    restart_engine(w);
+    it = item(w, ID_A);
+    CHECK(it.state == DL_FAILED && it.error == DL_ERR_VERIFY,
+          "still failed after a restart (%d, %d)", it.state, it.error);
+    CHECK(dl_core_local_path(w->core, ID_A, path, sizeof path) == 0,
+          "not offered for playback again");
+    CHECK(file_of(w, ID_A, "mp4") != NULL, "the file itself is left alone");
+    reqs = w->nreq;
+    dl_core_resume(w->core, ID_A);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE, "retry downloads it");
+    CHECK(w->nreq > reqs && w->req_first[reqs] == 0, "from byte 0, not from the old file");
+    CHECK(file_equals_src(w, ID_A, "mp4"), "identical");
+    world_free(w);
+
+    /* A queued entry whose .part is gone and whose .mp4 has the wrong size
+     * is not a finished download either. */
+    w = world_new();
+    char text[512];
+    snprintf(text, sizeof text,
+        "{\"v\":1,\"items\":[{\"id\":\"%s\",\"title\":\"A\",\"state\":\"queued\","
+        "\"done\":0,\"total\":%lld}]}", ID_A, (long long)SRC_LEN);
+    put_text(w, DIR "index.json", text);
+    put_file(w, DIR ID_A ".mp4", w->src, 1234);
+    core_new(w);
+    it = item(w, ID_A);
+    CHECK(it.state == DL_QUEUED && it.bytes_done == 0, "wrong-size .mp4 is not 'done' (%d)",
+          it.state);
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && file_equals_src(w, ID_A, "mp4"),
+          "downloaded in full");
+    world_free(w);
 }
 
 static void test_shutdown_and_restart(void) {
