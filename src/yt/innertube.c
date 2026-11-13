@@ -166,19 +166,33 @@ static char g_visitor_header[832];
 
 /* Cheap scan instead of parsing what can be a two-megabyte response; the scan
  * itself (yt_parse_visitor_data) is shared with the list calls and covered by
- * the host tests. */
+ * the host tests.
+ *
+ * The scratch the id is read into is on the heap, not in this frame. It is
+ * 768 bytes and this runs at the end of EVERY request, on whichever thread made
+ * it: for the list loads that is the attempt thread of ui/net_task.c, created
+ * with pthread_create and no stack size (the download and HLS workers, which
+ * also run curl, ask for 256 KiB explicitly), and the frames below it on that
+ * stack are http_post -> perform (a VitaHttpsResponse with a 2 KiB
+ * effective_url, a 128-byte header line) -> curl -> Mbed TLS. What that
+ * default is, and how deep the TLS handshake goes, cannot be read from this
+ * tree, so the 1.6 KB this and the header copy in it_call() would otherwise
+ * add is not spent on a stack of unknown size. If the allocation fails the
+ * scan is skipped: the id is a latch that the next response sets again. */
 static void harvest_visitor_data(const char *body) {
     if (!body) return;
-    char value[sizeof g_visitor_data];
-    size_t len = (size_t)yt_parse_visitor_data(body, value, sizeof value);
-    if (!len) return;
-    if (memcmp(g_visitor_data, value, len) == 0 && g_visitor_data[len] == '\0')
-        return; /* unchanged */
-    memcpy(g_visitor_data, value, len);
-    g_visitor_data[len] = '\0';
-    snprintf(g_visitor_header, sizeof g_visitor_header,
-             "X-Goog-Visitor-Id: %s", g_visitor_data);
-    vt_log("api: visitor id acquired (%u chars)", (unsigned)len);
+    char *value = malloc(sizeof g_visitor_data);
+    if (!value) return;
+    size_t len = (size_t)yt_parse_visitor_data(body, value, sizeof g_visitor_data);
+    if (len && !(memcmp(g_visitor_data, value, len) == 0 &&
+                 g_visitor_data[len] == '\0')) {
+        memcpy(g_visitor_data, value, len);
+        g_visitor_data[len] = '\0';
+        snprintf(g_visitor_header, sizeof g_visitor_header,
+                 "X-Goog-Visitor-Id: %s", g_visitor_data);
+        vt_log("api: visitor id acquired (%u chars)", (unsigned)len);
+    }
+    free(value);
 }
 
 const char *yt_last_error(void) {
@@ -253,18 +267,53 @@ static int it_call(const char *endpoint, const char *fields,
         snprintf(url, sizeof url, "%s%s?prettyPrint=false", base, endpoint);
     }
 
+    /* The OAuth header first: when it cannot be had there is nothing left to
+     * allocate or free below. */
+    const char *auth = NULL;
+    if (with_auth && yt_oauth_logged_in()) {
+        auth = yt_oauth_authorization(cancel);
+        /* Still signed in but no usable token: the refresh failed (or was
+         * cancelled). Sending the personalised request anonymously instead
+         * answered with an empty shell that the caller then presented as
+         * "no subscriptions" under a signed-in top bar; a network error is
+         * what happened, so report that. */
+        if (!auth && yt_oauth_logged_in()) {
+            vt_log("api %s: no access token, not sending anonymously",
+                   endpoint);
+            snprintf(g_last_error, sizeof g_last_error, "%s",
+                     vt_str(S_ERR_AUTH_REFRESH));
+            free(payload);
+            return -1;
+        }
+    }
+
     /* A copy, not a pointer to g_visitor_header: any other thread's response
      * (a player call, say) may rewrite the static while this request is being
      * put together, and a header torn in half is a request for a visitor
-     * nobody issued. */
-    char visitor_hdr[sizeof g_visitor_header];
-    visitor_hdr[0] = '\0';
+     * nobody issued. On the heap, not in this frame: the copy is 832 bytes on
+     * the stack of whichever thread runs the request, and that stack has curl
+     * and Mbed TLS under it (see harvest_visitor_data for what is known of it
+     * and what is not). It is freed once, straight after http_post(): the
+     * only return between the allocation and there is the out-of-memory one,
+     * which has nothing of it to free. A request that cannot carry the id it
+     * needs is not sent without it: a continuation sent with no visitor id is
+     * answered with an empty page that looks like the end of the feed. */
+    char *visitor_hdr = NULL;
     if (client == IT_CLIENT_VISIONOS) {
+        visitor_hdr = malloc(sizeof g_visitor_header);
+        if (!visitor_hdr) {
+            vt_log("api %s: out of memory for the visitor header", endpoint);
+            snprintf(g_last_error, sizeof g_last_error, "%s",
+                     vt_str(S_UNKNOWN_ERROR));
+            free(payload);
+            return -1;
+        }
         if (visitor)
-            snprintf(visitor_hdr, sizeof visitor_hdr, "X-Goog-Visitor-Id: %s",
-                     visitor);
+            snprintf(visitor_hdr, sizeof g_visitor_header,
+                     "X-Goog-Visitor-Id: %s", visitor);
         else
-            snprintf(visitor_hdr, sizeof visitor_hdr, "%s", g_visitor_header);
+            snprintf(visitor_hdr, sizeof g_visitor_header, "%s",
+                     g_visitor_header);
     }
 
     const char *headers[8];
@@ -283,23 +332,6 @@ static int it_call(const char *endpoint, const char *fields,
         headers[n++] = "X-Youtube-Client-Name: " IT_CLIENT_NAME_ID;
         headers[n++] = "X-Youtube-Client-Version: " IT_CLIENT_VERSION;
     }
-    const char *auth = NULL;
-    if (with_auth && yt_oauth_logged_in()) {
-        auth = yt_oauth_authorization(cancel);
-        /* Still signed in but no usable token: the refresh failed (or was
-         * cancelled). Sending the personalised request anonymously instead
-         * answered with an empty shell that the caller then presented as
-         * "no subscriptions" under a signed-in top bar; a network error is
-         * what happened, so report that. */
-        if (!auth && yt_oauth_logged_in()) {
-            vt_log("api %s: no access token, not sending anonymously",
-                   endpoint);
-            snprintf(g_last_error, sizeof g_last_error, "%s",
-                     vt_str(S_ERR_AUTH_REFRESH));
-            free(payload);
-            return -1;
-        }
-    }
     if (auth) headers[n++] = auth;
     headers[n] = NULL;
 
@@ -307,6 +339,7 @@ static int it_call(const char *endpoint, const char *fields,
     int ret = http_post(url, "application/json", payload, strlen(payload),
                         headers, cancel, out, &status);
     free(payload);
+    free(visitor_hdr);
     if (ret < 0) {
         vt_log("api %s: transport error %d", endpoint, ret);
         snprintf(g_last_error, sizeof g_last_error, vt_str(S_ERR_TRANSPORT),

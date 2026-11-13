@@ -45,10 +45,12 @@ static int failures;
 
 /* ---- what innertube.c links against, faked ----------------------------------- */
 static int g_logged_in;
+/* Signed in, but the refresh failed: no usable token. */
+static int g_auth_missing;
 int yt_oauth_logged_in(void) { return g_logged_in; }
 const char *yt_oauth_authorization(volatile int *cancel) {
     (void)cancel;
-    return "Authorization: Bearer TESTTOKEN";
+    return g_auth_missing ? NULL : "Authorization: Bearer TESTTOKEN";
 }
 const char *yt_region_hl(void) { return "de"; }
 const char *yt_region_gl(void) { return "DE"; }
@@ -562,6 +564,38 @@ static void test_dropped_logged(void) {
     CHECK(yt_parse_last_dropped_continuation_len() == (int)n, "dropped length %d", yt_parse_last_dropped_continuation_len());
 }
 
+/* ---- signed in without a usable token: nothing is sent anonymously in its place ------------- */
+static void test_no_token_sends_nothing(void) {
+    static yt_video_list_t out;
+    g_logged_in = 1;
+    g_auth_missing = 1;
+
+    /* A personalised request does not go out as an anonymous one (that
+     * answered with an empty shell shown as "no subscriptions"): nothing is
+     * sent, on either of the two paths of the feed, and the error says so. */
+    reset();
+    int rc = yt_subscriptions_feed(NULL, &out);
+    CHECK(rc < 0 && g_nreq == 0, "Abos without a token: rc %d, %d requests", rc, g_nreq);
+    CHECK(yt_last_error()[0] != '\0', "...and the reason is on record");
+
+    /* Start falls back to the anonymous feed, which needs no token: that one
+     * request carries the visitor header and no Authorization, and the page
+     * is the signed-out Start's, pageable. */
+    reset();
+    queue_file_with_visitor("fixtures/browse_home_visionos.json", "VISITOR_FALLBACK");
+    rc = yt_home_feed(NULL, &out);
+    CHECK(rc == 0 && out.count == 76 && g_nreq == 1, "Start without a token: rc %d, %d rows, %d requests", rc, out.count, g_nreq);
+    CHECK(g_nreq == 1 && strcmp(client_name(&g_req[0]), "101") == 0 && !has_header(&g_req[0], "Authorization"),
+          "the fallback is the anonymous VISIONOS request");
+    const char *vid = g_nreq ? header_value(&g_req[0], "X-Goog-Visitor-Id: ") : NULL;
+    CHECK(g_nreq == 1 && count_headers(&g_req[0], "X-Goog-Visitor-Id") == 1 && vid != NULL,
+          "exactly one visitor header on the fallback");
+    CHECK(out.surface == YT_SURF_BROWSE_WEB && strcmp(out.visitor, "VISITOR_FALLBACK") == 0,
+          "the fallback page is stamped as the signed-out Start: surface %d visitor '%s'", (int)out.surface, out.visitor);
+    g_auth_missing = 0;
+    g_logged_in = 0;
+}
+
 /* ---- the stamp is named by the call, never guessed from the request ------------------------- */
 
 /* One request shape and the surface whose route it is (NONE: no route). */
@@ -664,6 +698,7 @@ int main(void) {
     test_limits();
     test_dropped_logged();
     test_stamp_is_named();
+    test_no_token_sends_nothing();
     reset();
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL INNERTUBE TESTS PASSED\n");
