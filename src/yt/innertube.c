@@ -53,6 +53,88 @@ typedef enum {
  * ("Error expanding 'fields' parameter"). Verified live 2026-08-27. */
 #define IT_LIST_FIELDS "contents,continuationContents"
 
+/* The anonymous VISIONOS browse (Start, signed out), page 1 AND every
+ * continuation: the plain filter plus the one field that carries the visitor
+ * id. Without it the id stays unknown to the app — the filter strips
+ * responseContext — and a continuation needs exactly the id its token was
+ * issued under (see YT_SURF_BROWSE_WEB). Verified live: a "responseContext/
+ * visitorData" sub-path is accepted on this endpoint and the value comes back
+ * about 445 characters long near the start of the body; the filtered body is
+ * ~244 KB where an unfiltered one is ~649 KB, so the filter stays. This is
+ * deliberately NOT part of IT_LIST_FIELDS: it is untested on search, next and
+ * the TV browse, and one unknown name there is an HTTP 400. */
+#define IT_WEB_BROWSE_FIELDS "contents,continuationContents,responseContext/visitorData"
+
+/* Where a page's continuation token goes back to, in one table.
+ *
+ * A continuation is only valid at the request that issued it — which is also
+ * why yt_continue() used to answer nothing but search results: it sent EVERY
+ * token to "search" as the ANDROID client, so a browse token (Start, a
+ * channel's videos) was a 400 or an empty page and only the search list ever
+ * paged. A list now remembers the surface its token came from
+ * (yt_video_list_t.surface) and yt_continue() looks the request up here;
+ * it_list_call() stamps the surface with the reverse lookup. Both directions
+ * read the same rows, so they cannot drift apart.
+ *
+ * `fields` is what the CONTINUATION request asks for (page 1 of the same
+ * surface uses the same, see the call sites). `needs_visitor`: the token is
+ * only good with the visitor id of the response that issued it, so the page
+ * carries that id (yt_video_list_t.visitor) and the continuation sends it.
+ *
+ * Only surfaces verified against the live API have a row. Pages from every
+ * other request get YT_SURF_NONE, so no list ever offers a load-more that
+ * cannot work:
+ *   - signed-in Start (TV, OAuth) and the Abos feed (TV with an ANDROID
+ *     fallback, OAuth): both need a login to capture, and in the Abos feed
+ *     the first nextContinuationData in document order continues one SHELF,
+ *     not the feed. When they are verified, add rows here (and make
+ *     list_screen.c sort each new Abos page with yt_sort_newest_first before
+ *     absorbing it — a continuation is not sorted by yt_subscriptions_feed);
+ *   - related videos ("next"): nothing asks for a second page. */
+typedef struct {
+    yt_surface_t surface;
+    const char *endpoint;
+    it_client_t client;
+    int with_auth;
+    int needs_visitor;
+    const char *fields;
+} it_route_t;
+
+static const it_route_t g_routes[] = {
+    /* Unchanged from what yt_continue() always did for search. */
+    { YT_SURF_SEARCH,     "search", IT_CLIENT_ANDROID,  0, 0, IT_LIST_FIELDS },
+    /* The signed-out Start feed (see yt_home_feed). Anonymous on purpose:
+     * this client is the one that works without an account. A token sent
+     * without the issuing visitor id, or with another, is answered with HTTP
+     * 200 and an empty shell (~4 KB, zero rows) — no error to react to. */
+    { YT_SURF_BROWSE_WEB, "browse", IT_CLIENT_VISIONOS, 0, 1,
+      IT_WEB_BROWSE_FIELDS },
+    /* A channel's uploads (yt_channel_videos): the TV client, anonymous, no
+     * visitor id. Verified live: the 124-character token of page 1 returns
+     * the next 15 tiles as continuationContents.playlistVideoListContinuation
+     * with exactly this request. */
+    { YT_SURF_CHANNEL_TV, "browse", IT_CLIENT_TV,       0, 0, IT_LIST_FIELDS },
+};
+
+static const it_route_t *route_for_surface(yt_surface_t surface) {
+    for (size_t i = 0; i < sizeof g_routes / sizeof *g_routes; i++)
+        if (g_routes[i].surface == surface) return &g_routes[i];
+    return NULL; /* YT_SURF_NONE, the reserved TV/ANDROID ones, anything else */
+}
+
+/* The surface a request to (endpoint, client, with_auth) belongs to; NONE for
+ * a request that has no continuation route (see the table's note). */
+static yt_surface_t surface_of(const char *endpoint, it_client_t client,
+                               int with_auth) {
+    for (size_t i = 0; i < sizeof g_routes / sizeof *g_routes; i++) {
+        const it_route_t *r = &g_routes[i];
+        if (r->client == client && (r->with_auth != 0) == (with_auth != 0) &&
+            strcmp(r->endpoint, endpoint) == 0)
+            return r->surface;
+    }
+    return YT_SURF_NONE;
+}
+
 static char g_last_error[96];
 
 /* YouTube answers a player request from an unknown visitor with
@@ -64,23 +146,14 @@ static char g_last_error[96];
 static char g_visitor_data[768];
 static char g_visitor_header[832];
 
-/* Cheap scan instead of parsing what can be a two-megabyte response: the
- * field sits in responseContext near the top and its value is plain
- * base64url with no escapes to unpick. */
+/* Cheap scan instead of parsing what can be a two-megabyte response; the scan
+ * itself (yt_parse_visitor_data) is shared with the list calls and covered by
+ * the host tests. */
 static void harvest_visitor_data(const char *body) {
     if (!body) return;
-    static const char VD_KEY[] = "\"visitorData\":\"";
-    const char *key = strstr(body, VD_KEY);
-    if (!key) return;
-    /* sizeof-1 = the literal's length, so this can never drift off by a
-     * character the way a hand-counted offset did (it was 16 for a 15-char
-     * key, which lopped the first character off every visitor id and got
-     * every VISIONOS request answered with LOGIN_REQUIRED). */
-    const char *value = key + (sizeof VD_KEY - 1);
-    const char *end = strchr(value, '"');
-    if (!end || end == value) return;
-    size_t len = (size_t)(end - value);
-    if (len >= sizeof g_visitor_data) return;
+    char value[sizeof g_visitor_data];
+    size_t len = (size_t)yt_parse_visitor_data(body, value, sizeof value);
+    if (!len) return;
     if (memcmp(g_visitor_data, value, len) == 0 && g_visitor_data[len] == '\0')
         return; /* unchanged */
     memcpy(g_visitor_data, value, len);
@@ -139,10 +212,12 @@ static json_t *client_context(it_client_t client) {
 /* POST an InnerTube endpoint. body_extra is adopted (reference stolen).
  * with_auth attaches the OAuth token — only for personalized endpoints;
  * anonymous endpoints stay anonymous so playback never depends on a
- * possibly-stale token. */
+ * possibly-stale token. visitor (VISIONOS only): NULL sends the app's latched
+ * id; a string sends exactly that one as X-Goog-Visitor-Id instead — what a
+ * continuation does, since its token is bound to the id it was issued under. */
 static int it_call(const char *endpoint, const char *fields,
                    json_t *body_extra, int with_auth, it_client_t client,
-                   volatile int *cancel, http_buf_t *out) {
+                   const char *visitor, volatile int *cancel, http_buf_t *out) {
     json_t *body = body_extra ? body_extra : json_object();
     json_object_set_new(body, "context", client_context(client));
     char *payload = json_dumps(body, JSON_COMPACT);
@@ -160,6 +235,20 @@ static int it_call(const char *endpoint, const char *fields,
         snprintf(url, sizeof url, "%s%s?prettyPrint=false", base, endpoint);
     }
 
+    /* A copy, not a pointer to g_visitor_header: any other thread's response
+     * (a player call, say) may rewrite the static while this request is being
+     * put together, and a header torn in half is a request for a visitor
+     * nobody issued. */
+    char visitor_hdr[sizeof g_visitor_header];
+    visitor_hdr[0] = '\0';
+    if (client == IT_CLIENT_VISIONOS) {
+        if (visitor)
+            snprintf(visitor_hdr, sizeof visitor_hdr, "X-Goog-Visitor-Id: %s",
+                     visitor);
+        else
+            snprintf(visitor_hdr, sizeof visitor_hdr, "%s", g_visitor_header);
+    }
+
     const char *headers[8];
     int n = 0;
     if (client == IT_CLIENT_TV) {
@@ -171,7 +260,7 @@ static int it_call(const char *endpoint, const char *fields,
         headers[n++] = "X-Youtube-Client-Version: " IT_VISION_VERSION;
         headers[n++] = "User-Agent: " IT_VISION_UA;
         headers[n++] = "Origin: https://www.youtube.com";
-        if (g_visitor_header[0]) headers[n++] = g_visitor_header;
+        if (visitor_hdr[0]) headers[n++] = visitor_hdr;
     } else {
         headers[n++] = "X-Youtube-Client-Name: " IT_CLIENT_NAME_ID;
         headers[n++] = "X-Youtube-Client-Version: " IT_CLIENT_VERSION;
@@ -224,19 +313,74 @@ static int it_call(const char *endpoint, const char *fields,
     return 0;
 }
 
-static int it_list_call(const char *endpoint, json_t *body, int with_auth,
-                        it_client_t client, volatile int *cancel,
-                        yt_video_list_t *out) {
+/* What the parser had to throw away from the response it just read: a log
+ * line is all that tells "the page ended" from "the page did not fit". */
+static void log_parse_drops(const char *what) {
+    int token = yt_parse_last_dropped_continuation_len();
+    int items = yt_parse_last_dropped_items();
+    if (token)
+        vt_log("parse %s: next-page token of %d chars DROPPED (limit %d)", what,
+               token, YT_CONTINUATION_MAX - 1);
+    if (items)
+        vt_log("parse %s: %d rows DROPPED (YT_LIST_MAX %d)", what, items,
+               YT_LIST_MAX);
+}
+
+/* One list request. `fields` is the response filter (NULL for none).
+ * continuation != 0: this is a "next page" request, and `visitor` is the id
+ * its token is bound to (NULL where the surface has none).
+ *
+ * On success the page is stamped here, not in the callers: its surface from
+ * the (endpoint, client, auth) actually used, so a fallback that changes the
+ * client between two calls (home) can never leave the page labelled with the
+ * request that failed; and, for a surface whose tokens are bound to a visitor
+ * id, that id. A first page takes it from ITS OWN response (the token was
+ * issued under that); a continuation page carries forward the one it was sent
+ * with and never reads a new one, so the whole list keeps a single id. A first
+ * page that has no visitorData to take is not pageable (surface NONE): its
+ * token would only ever bring back an empty shell.
+ *
+ * The parser clears `out` first, so a retry of the same task starts clean as
+ * well. */
+static int it_list_call(const char *endpoint, const char *fields, json_t *body,
+                        int with_auth, it_client_t client,
+                        const char *visitor, int continuation,
+                        volatile int *cancel, yt_video_list_t *out) {
     http_buf_t buf = {0};
-    int ret = it_call(endpoint, IT_LIST_FIELDS, body, with_auth, client,
+    int ret = it_call(endpoint, fields, body, with_auth, client, visitor,
                       cancel, &buf);
     if (ret == 0) {
         int count = yt_parse_video_list(buf.data, buf.len, out);
-        vt_log("parse %s: %d videos, continuation=%d", endpoint, count,
-               out->continuation[0] != '\0');
-        if (count == 0)
-            snprintf(g_last_error, sizeof g_last_error,
-                     vt_str(S_ERR_EMPTY_RESPONSE), (unsigned)buf.len);
+        if (count >= 0) {
+            out->surface = surface_of(endpoint, client, with_auth);
+            const it_route_t *route = route_for_surface(out->surface);
+            if (route && route->needs_visitor) {
+                if (continuation) {
+                    snprintf(out->visitor, sizeof out->visitor, "%s",
+                             visitor ? visitor : "");
+                } else if (!yt_parse_visitor_data(buf.data, out->visitor,
+                                                  sizeof out->visitor)) {
+                    vt_log("parse %s: no visitorData in the response, so its "
+                           "token is unusable; not pageable", endpoint);
+                    out->surface = YT_SURF_NONE;
+                }
+            }
+        }
+        vt_log("parse %s: %d videos, continuation=%u chars, surface=%d%s",
+               endpoint, count, (unsigned)strlen(out->continuation),
+               (int)out->surface, continuation ? " (next page)" : "");
+        log_parse_drops(endpoint);
+        if (count == 0) {
+            /* An empty FIRST page is a failure worth reporting. An empty
+             * continuation is YouTube's way of saying the token is stale or
+             * was sent with another visitor id (HTTP 200, zero rows): not an
+             * error text for the user, the list just has no next page. */
+            if (continuation)
+                vt_log("continue %s: 0 rows, stale or mismatched token", endpoint);
+            else
+                snprintf(g_last_error, sizeof g_last_error,
+                         vt_str(S_ERR_EMPTY_RESPONSE), (unsigned)buf.len);
+        }
         ret = count >= 0 ? 0 : -1;
     }
     http_buf_free(&buf);
@@ -257,12 +401,16 @@ int yt_search(const char *query, volatile int *cancel, yt_video_list_t *out,
     http_buf_t buf = {0};
     int ret = it_call("search", IT_LIST_FIELDS,
                       json_pack("{s:s}", "query", query), 0,
-                      IT_CLIENT_ANDROID, cancel, &buf);
+                      IT_CLIENT_ANDROID, NULL, cancel, &buf);
     if (ret == 0) {
         int count = yt_parse_search(buf.data, buf.len, out, out_channels);
+        /* Not it_list_call(), so the page is stamped here: the continuation
+         * of this response goes back to search as ANDROID, anonymous. */
+        if (count >= 0) out->surface = surface_of("search", IT_CLIENT_ANDROID, 0);
         int channels = out_channels ? out_channels->count : 0;
-        vt_log("parse search: %d videos, %d channels, continuation=%d", count,
-               channels, out->continuation[0] != '\0');
+        vt_log("parse search: %d videos, %d channels, continuation=%u chars",
+               count, channels, (unsigned)strlen(out->continuation));
+        log_parse_drops("search");
         if (count == 0 && channels == 0)
             snprintf(g_last_error, sizeof g_last_error,
                      vt_str(S_ERR_EMPTY_RESPONSE), (unsigned)buf.len);
@@ -272,17 +420,34 @@ int yt_search(const char *query, volatile int *cancel, yt_video_list_t *out,
     return ret;
 }
 
-int yt_continue(const char *continuation, volatile int *cancel,
+int yt_continue(const char *continuation, yt_surface_t surface,
+                const char *visitor, volatile int *cancel,
                 yt_video_list_t *out) {
-    return it_list_call("search",
-                        json_pack("{s:s}", "continuation", continuation), 0,
-                        IT_CLIENT_ANDROID, cancel, out);
+    const it_route_t *route = route_for_surface(surface);
+    if (!route || !continuation || !continuation[0] ||
+        (route->needs_visitor && (!visitor || !visitor[0]))) {
+        /* No request: a token with no known way back is not worth a guess —
+         * the old guess (search) is what broke every other list — and a
+         * visitor-bound token without its visitor is a certain empty shell. */
+        vt_log("continue: no route for surface %d (token %s, visitor %s), "
+               "not sending", (int)surface,
+               continuation && continuation[0] ? "set" : "empty",
+               visitor && visitor[0] ? "set" : "empty");
+        snprintf(g_last_error, sizeof g_last_error, "%s",
+                 vt_str(S_UNKNOWN_ERROR));
+        return -1;
+    }
+    return it_list_call(route->endpoint, route->fields,
+                        json_pack("{s:s}", "continuation", continuation),
+                        route->with_auth, route->client,
+                        route->needs_visitor ? visitor : NULL, 1, cancel, out);
 }
 
 int yt_related(const char *video_id, volatile int *cancel,
                yt_video_list_t *out) {
-    return it_list_call("next", json_pack("{s:s}", "videoId", video_id), 0,
-                        IT_CLIENT_ANDROID, cancel, out);
+    return it_list_call("next", IT_LIST_FIELDS,
+                        json_pack("{s:s}", "videoId", video_id), 0,
+                        IT_CLIENT_ANDROID, NULL, 0, cancel, out);
 }
 
 int yt_home_feed(volatile int *cancel, yt_video_list_t *out) {
@@ -299,34 +464,40 @@ int yt_home_feed(volatile int *cancel, yt_video_list_t *out) {
      * videos as compactVideoRenderer, which the parser already handles. It
      * works for the same reason the HLS resolve does — www.youtube.com with
      * an Origin header and the harvested visitor id, rather than the bare
-     * googleapis host that flips to LOGIN_REQUIRED. Its continuation token
-     * is over 4 KB and does not fit YT_CONTINUATION_MAX, so the parser drops
-     * it (see set_continuation) and this stays one page of ~60 rows — which
-     * is what the Start tab shows anyway, since only search loads more.
+     * googleapis host that flips to LOGIN_REQUIRED. A page is 66-84 rows and
+     * carries a ~4.5 KB next-page token (tests/fixtures/browse_home_visionos
+     * .json: 76 rows, 4482 characters), which is why YT_LIST_MAX and
+     * YT_CONTINUATION_MAX are sized the way they are: while they were 60 and
+     * 2048 the tail of every page and the token were silently dropped and the
+     * Start tab could never load more. This page is the one that is pageable:
+     * it_list_call stamps it BROWSE_WEB and takes the visitor id out of its own
+     * response (hence IT_WEB_BROWSE_FIELDS, which keeps that field), and
+     * yt_continue() sends the token back with that id. The signed-in TV page
+     * below is stamped NONE — see the route table.
      *
      * The anonymous call doubles as the fallback for a signed-in session
      * whose TV browse comes back empty, which is what a revoked or
      * reputation-gated token looks like from here. */
     if (yt_oauth_logged_in()) {
-        int ret = it_list_call("browse",
+        int ret = it_list_call("browse", IT_LIST_FIELDS,
                                json_pack("{s:s}", "browseId", "FEwhat_to_watch"),
-                               1, IT_CLIENT_TV, cancel, out);
+                               1, IT_CLIENT_TV, NULL, 0, cancel, out);
         if (ret == 0 && out->count > 0) return 0;
         if (cancel && *cancel) return ret;
         vt_log("home: tv feed empty (ret=%d), retrying anonymously", ret);
     }
-    return it_list_call("browse",
+    return it_list_call("browse", IT_WEB_BROWSE_FIELDS,
                         json_pack("{s:s}", "browseId", "FEwhat_to_watch"), 0,
-                        IT_CLIENT_VISIONOS, cancel, out);
+                        IT_CLIENT_VISIONOS, NULL, 0, cancel, out);
 }
 
 int yt_subscriptions_feed(volatile int *cancel, yt_video_list_t *out) {
     if (!yt_oauth_logged_in()) return -2;
     /* The TV context matches the OAuth token; the android context is kept
      * as a fallback in case the TV path regresses. */
-    int ret = it_list_call("browse",
+    int ret = it_list_call("browse", IT_LIST_FIELDS,
                            json_pack("{s:s}", "browseId", "FEsubscriptions"),
-                           1, IT_CLIENT_TV, cancel, out);
+                           1, IT_CLIENT_TV, NULL, 0, cancel, out);
     /* Sorted explicitly: the stable sort is a no-op when YouTube already
      * returns the feed newest-first, and a real fix when the TV surface
      * groups it by channel or by shelf instead. */
@@ -335,9 +506,12 @@ int yt_subscriptions_feed(volatile int *cancel, yt_video_list_t *out) {
         return 0;
     }
     vt_log("subs via tv client failed, trying android");
-    ret = it_list_call("browse",
+    /* Neither page of this feed is pageable yet (stamped NONE by
+     * it_list_call; see the route table for why), so the Abos tab shows one
+     * page, as it always did. */
+    ret = it_list_call("browse", IT_LIST_FIELDS,
                        json_pack("{s:s}", "browseId", "FEsubscriptions"), 1,
-                       IT_CLIENT_ANDROID, cancel, out);
+                       IT_CLIENT_ANDROID, NULL, 0, cancel, out);
     if (ret == 0) yt_sort_newest_first(out);
     return ret;
 }
@@ -347,7 +521,7 @@ int yt_channel_list(volatile int *cancel, yt_channel_list_t *out) {
     http_buf_t buf = {0};
     int ret = it_call("browse", IT_LIST_FIELDS,
                       json_pack("{s:s}", "browseId", "FEchannels"), 1,
-                      IT_CLIENT_TV, cancel, &buf);
+                      IT_CLIENT_TV, NULL, cancel, &buf);
     if (ret == 0) {
         int count = yt_parse_channel_list(buf.data, buf.len, out);
         /* Avatar count included so a blank-square report can be told apart
@@ -385,16 +559,22 @@ int yt_channel_videos(const char *channel_id, volatile int *cancel,
     snprintf(browse_id, sizeof browse_id, "VLUU%s", channel_id + 2);
     http_buf_t buf = {0};
     json_t *body = json_pack("{s:s}", "browseId", browse_id);
-    int ret = it_call("browse", IT_LIST_FIELDS, body, 0, IT_CLIENT_TV, cancel,
-                      &buf);
+    int ret = it_call("browse", IT_LIST_FIELDS, body, 0, IT_CLIENT_TV, NULL,
+                      cancel, &buf);
     if (ret == 0) {
         /* A playlist surface carries no channel header, so channel_title
          * stays empty and list_screen.c keeps the name it already has from
          * the subscriptions list. */
         int count = yt_parse_channel_page(buf.data, buf.len, out,
                                           channel_title, channel_title_cap);
+        /* Anonymous TV, as requested above: the uploads token goes back the
+         * same way (YT_SURF_CHANNEL_TV). Not it_list_call, so stamped here. */
+        if (count >= 0) out->surface = surface_of("browse", IT_CLIENT_TV, 0);
         yt_sort_newest_first(out);
-        vt_log("parse channel uploads: %d videos", count);
+        vt_log("parse channel uploads: %d videos, continuation=%u chars, "
+               "surface=%d", count, (unsigned)strlen(out->continuation),
+               (int)out->surface);
+        log_parse_drops("channel uploads");
         ret = count >= 0 ? 0 : -1;
     }
     http_buf_free(&buf);
@@ -455,7 +635,7 @@ int yt_subscribe(const char *channel_id, int subscribe, volatile int *cancel) {
      * the whole request with HTTP 400. */
     int ret = it_call(subscribe ? "subscription/subscribe"
                                 : "subscription/unsubscribe",
-                      NULL, body, 1, IT_CLIENT_TV, cancel, &buf);
+                      NULL, body, 1, IT_CLIENT_TV, NULL, cancel, &buf);
     if (ret == 0)
         vt_log("subscribe %s %s: echoed state %d", channel_id,
                subscribe ? "on" : "off",
@@ -492,8 +672,8 @@ int yt_hls_manifest(const char *video_id, volatile int *cancel,
             "playbackContext", "contentPlaybackContext",
             "html5Preference", "HTML5_PREF_WANTS");
         http_buf_t buf = {0};
-        int ret = it_call("player", NULL, body, 0, IT_CLIENT_VISIONOS, cancel,
-                          &buf);
+        int ret = it_call("player", NULL, body, 0, IT_CLIENT_VISIONOS, NULL,
+                          cancel, &buf);
         if (ret < 0) {
             http_buf_free(&buf);
             return ret;
@@ -540,7 +720,7 @@ int yt_resolve_stream(const char *video_id, volatile int *cancel,
                              "contentCheckOk", 1,
                              "racyCheckOk", 1);
     http_buf_t buf = {0};
-    int ret = it_call("player", NULL, body, 0, IT_CLIENT_ANDROID, cancel,
+    int ret = it_call("player", NULL, body, 0, IT_CLIENT_ANDROID, NULL, cancel,
                       &buf);
     if (ret == 0) ret = yt_parse_player(buf.data, buf.len, out);
     http_buf_free(&buf);
