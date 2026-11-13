@@ -354,13 +354,20 @@ static int load_more(VideoListState *list) {
                                      &g_fetch_cancel);
         if (g_fetch_cancel) return added > 0;
         if (ret < 0) {
-            vt_ui_toast(vt_str(S_NETWORK_ERROR),
-                        yt_last_error()[0] ? yt_last_error()
-                                           : vt_str(S_CHECK_NETWORK), 120);
-            if (++list->cont_fails >= 3) {
+            /* The failure is counted, and the paging ended if it was the third,
+             * BEFORE the toast: the toast is modal (120 frames, no input is
+             * read) and everything that is going to be true of this list after
+             * the failure should be true before anything blocks, not after.
+             * yt_last_error() is a global the toast reads later, not state of
+             * this list, so nothing here depends on the order. */
+            int fails = ++list->cont_fails;
+            if (fails >= 3) {
                 vt_log("list: load-more failed 3 times in a row, ending paging");
                 video_list_end_paging(list);
             }
+            vt_ui_toast(vt_str(S_NETWORK_ERROR),
+                        yt_last_error()[0] ? yt_last_error()
+                                           : vt_str(S_CHECK_NETWORK), 120);
             return added > 0;
         }
         if (task.page.count == 0) {

@@ -79,7 +79,14 @@ static void c2_during_hold(void) {
     CHECK(g_home.cont_fails == 1, "fails %d", g_home.cont_fails);
     CHECK(g_home.count == 76, "count %d", g_home.count);
 }
-static void c2_toast(void) { seen("Network error"); seen("HTTP error 400"); }
+/* Read WHILE the failure toast is up (the toast is modal: this runs from inside
+ * its frame loop): the failure must already be counted by then, so nothing that
+ * happens during the toast can skip it. */
+static void c2_toast(void) {
+    seen("Network error"); seen("HTTP error 400");
+    CHECK(g_home.cont_fails == 1 && strcmp(g_home.continuation, "HT1") == 0,
+          "the failure is counted before its toast: fails %d token '%s'", g_home.cont_fails, g_home.continuation);
+}
 static void c2_second(void) { CHECK(h_ncont == 2 && g_home.cont_fails == 2 && strcmp(g_home.continuation, "HT1") == 0, "calls %d fails %d", h_ncont, g_home.cont_fails); }
 static void c2_ok_mode(void) { h_more_mode = MORE_OK; }
 static void c2_recovered(void) {
@@ -108,13 +115,23 @@ static void c2b_after3(void) {
     CHECK(g_home.continuation[0] == 0 && g_home.cont_surface == YT_SURF_NONE, "token must be gone after 3 fails: '%s'", g_home.continuation);
 }
 static void c2b_still3(void) { CHECK(h_ncont == 3, "no call without a token: %d", h_ncont); }
+/* Inside the THIRD failure's toast: paging is already over, not still waiting
+ * for the toast to end before it is. */
+static void c2b_in_toast3(void) {
+    seen("Network error");
+    CHECK(h_ncont == 3, "calls %d", h_ncont);
+    CHECK(g_home.continuation[0] == 0 && g_home.cont_surface == YT_SURF_NONE,
+          "the third failure ends paging before its toast, not after: '%s'", g_home.continuation);
+}
 static void s2b(void) {
     wait(3);
     press_n(BTN_RIGHT, 19);
     call(c2_fail_mode);
     press(BTN_DOWN); wait(135);
     press(BTN_DOWN); wait(135);
-    press(BTN_DOWN); wait(135);
+    press(BTN_DOWN); wait(20);
+    call(c2b_in_toast3);
+    wait(114);
     call(c2b_after3);
     press(BTN_DOWN); wait(2);
     call(c2b_still3);
