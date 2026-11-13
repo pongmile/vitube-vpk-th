@@ -7,6 +7,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push to a branch or PR replaces the run still going for it. A tag run
+# publishes a release, so it is never cancelled, and its group is its own run
+# id: no other run can queue behind it or replace it while it waits.
+concurrency:
+  group: build-${{ startsWith(github.ref, 'refs/tags/') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+# Read-only by default; the one job that publishes asks for more.
+permissions:
+  contents: read
+
 defaults:
   run:
     shell: bash
@@ -14,44 +25,99 @@ defaults:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    # test_hls runs threads; a deadlock must not hold the runner for hours.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      # gcc's errors and warnings, the tests' own "FAIL file:line: why" lines
+      # and the sanitizers' reports become annotations: readable on the run
+      # page, and through the API, without downloading the logs.
+      - name: Annotate compiler and test failures
+        run: echo "::add-matcher::.github/problem-matchers/host-tests.json"
+
       - name: Host-side tests
         run: |
+          # t NAME prints the name of the test whose build and run follow, and
+          # the trap names it again if any of those commands fails. The notice
+          # at the end lists what ran, so the run page shows what was covered.
+          ran=()
+          t() { current=$1; ran+=("$1"); echo "=== $1"; }
+          trap 'echo "::error title=Host-side tests::${current:-setup} failed"' ERR
+
+          t test_thai_shape
           gcc -Isrc -Wall -Werror -o /tmp/tt tests/test_thai_shape.c src/ui/thai_shape.c
           /tmp/tt
+          t test_strings
           gcc -Isrc -Wall -o /tmp/ts tests/test_strings.c src/ui/strings_table.c \
               src/ui/strings_de.c src/ui/strings_en.c src/ui/strings_es.c \
               src/ui/strings_pt.c src/ui/strings_it.c src/ui/strings_fr.c
           /tmp/ts
+          t test_net_retry
           gcc -Isrc -Wall -Werror -o /tmp/tnr tests/test_net_retry.c src/net/net_retry.c
           /tmp/tnr
+          t test_kinetic_scroll
           gcc -Isrc -Wall -Wextra -Werror -o /tmp/tks tests/test_kinetic_scroll.c \
               src/ui/kinetic_scroll.c -lm
           /tmp/tks
+          t test_local_stream
           gcc -Isrc -Wall -Wextra -Werror -o /tmp/tls tests/test_local_stream.c \
               src/media/local_stream.c
           /tmp/tls
+          t test_dl_format
           gcc -Isrc -Wall -Wextra -Werror -o /tmp/tdf tests/test_dl_format.c \
               src/ui/dl_format.c
           /tmp/tdf
-          # The download engine against a fake card and a fake server. jansson
-          # is vendored and not ours to make warning-free, so its objects are
-          # built apart, without -Werror.
+          t test_player_touch
+          gcc -Isrc -Wall -Wextra -Werror -o /tmp/tpt tests/test_player_touch.c \
+              src/ui/player_touch.c
+          /tmp/tpt
+          # The HLS source against a scripted server. tests/stubs stands in for
+          # vita-https and the two psp2 headers it includes; the test supplies
+          # the rest of the platform itself, and the worker threads are real.
+          t test_hls
+          gcc -Isrc -Itests/stubs -Wall -Wextra -Werror -o /tmp/thls \
+              tests/test_hls.c src/media/hls.c -pthread
+          /tmp/thls
+
+          # jansson is vendored and not ours to make warning-free, so its
+          # objects are built apart, without -Werror, and shared by the
+          # parser tests and the download engine's below.
+          current="jansson (build)"; echo "=== $current"
           mkdir -p /tmp/js
           for f in dump error hashtable hashtable_seed load memory pack_unpack \
                    strbuffer strconv utf value version; do
             gcc -c -w -DHAVE_CONFIG_H -Iexternal/jansson -o /tmp/js/$f.o external/jansson/$f.c
           done
+
+          # The parsers against responses captured from the live API
+          # (tests/fixtures), so a change in what they pull out of a real
+          # response shows up here. The fixtures are opened by a relative
+          # path, hence tests/ as the working directory.
+          t test_parse
+          gcc -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tp \
+              tests/test_parse.c src/yt/parse.c /tmp/js/*.o
+          (cd tests && /tmp/tp)
+          t "test_parse (ASan, UBSan)"
+          gcc -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+              -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tp_san \
+              tests/test_parse.c src/yt/parse.c /tmp/js/*.o
+          (cd tests && ASAN_OPTIONS=detect_leaks=0 /tmp/tp_san)
+
+          # The download engine against a fake card and a fake server.
+          t test_dl_core
           gcc -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tdl \
               tests/test_dl_core.c src/dl/dl_core.c src/dl/dl_index.c \
               src/dl/dl_mp4.c /tmp/js/*.o
           /tmp/tdl
+          t "test_dl_core (ASan, UBSan)"
           gcc -g -fsanitize=address,undefined -fno-sanitize-recover=all \
               -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tdl_san \
               tests/test_dl_core.c src/dl/dl_core.c src/dl/dl_index.c \
               src/dl/dl_mp4.c /tmp/js/*.o
           ASAN_OPTIONS=detect_leaks=0 /tmp/tdl_san
+
+          echo "::notice title=Host-side tests::${#ran[@]} passed: $(IFS=";"; echo "${ran[*]}")"
 
   vpk:
     runs-on: ubuntu-latest
@@ -122,11 +188,33 @@ jobs:
         with:
           name: ViTube-vpk
           path: dist
+      # A release with no VPK, or an empty one, is worse than no release: stop
+      # here, loudly, before anything is published.
       # A fixed asset name keeps releases/latest/download/ViTube-TH.vpk working.
-      - run: mv dist/ViTube.vpk dist/ViTube-TH.vpk
-      - uses: softprops/action-gh-release@v2
+      # The checksum is taken here, in dist/, so the line names the file as it
+      # is published, with no path: `sha256sum -c` next to the download takes it
+      # as is.
+      - name: Name the VPK, check it, checksum it
+        working-directory: dist
+        run: |
+          if [ ! -f ViTube.vpk ]; then
+            echo "::error title=No VPK::the ViTube-vpk artifact holds no ViTube.vpk"
+            ls -la
+            exit 1
+          fi
+          if [ ! -s ViTube.vpk ]; then
+            echo "::error title=Empty VPK::ViTube.vpk is empty"
+            exit 1
+          fi
+          mv ViTube.vpk ViTube-TH.vpk
+          sha256sum ViTube-TH.vpk | tee ViTube-TH.vpk.sha256
+      # Pinned to a commit (the release of v2.6.2, which is what v2 points to
+      # today): this action runs with a token that can write releases.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: ViTube TH ${{ github.ref_name }}
           body_path: .github/release-notes.md
-          files: dist/ViTube-TH.vpk
+          files: |
+            dist/ViTube-TH.vpk
+            dist/ViTube-TH.vpk.sha256
           fail_on_unmatched_files: true

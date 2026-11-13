@@ -19,6 +19,7 @@ ViTube TH fork มาจาก [ViTube v2.0 ของ shorelight82](https://gith
 
 **วิธีติดตั้ง**
 ดาวน์โหลด `ViTube-TH.vpk` ด้านล่าง แล้วติดตั้งผ่าน VitaShell (ต้องลง HENkaku/Ensō ไว้แล้ว)
+เช็กว่าไฟล์ครบและไม่ถูกแก้: ดาวน์โหลด `ViTube-TH.vpk.sha256` ไว้โฟลเดอร์เดียวกับ VPK แล้วรัน `sha256sum -c ViTube-TH.vpk.sha256` (Windows: `certutil -hashfile ViTube-TH.vpk SHA256` แล้วเทียบกับค่าในไฟล์ .sha256)
 ติดตั้งทับเวอร์ชันเดิมได้เลย การล็อกอินและประวัติยังอยู่ครบ
 ถ้าไอคอนหรือหน้า LiveArea ยังเป็นแบบเดิมหลังติดตั้งทับ ให้รีสตาร์ทเครื่องหนึ่งครั้ง
 
