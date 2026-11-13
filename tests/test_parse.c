@@ -247,6 +247,268 @@ static void check_visitor(void) {
     CHECK(yt_parse_visitor_data(NULL, out, sizeof out) == 0 && !out[0], "NULL json");
 }
 
+/* ---- hostile and borderline input --------------------------------------------------- */
+static char *repeat_rows(const char *key, int n, const char *between_rows_extra) {
+    /* {"items":[ {<key>:{...}}, ... ]} with n rows. The rows are
+     * compactVideoRenderers or tileRenderers, as `key` says. */
+    size_t cap = (size_t)n * 260 + 512 + (between_rows_extra ? strlen(between_rows_extra) : 0);
+    char *s = malloc(cap);
+    size_t used = (size_t)snprintf(s, cap, "{\"items\":[");
+    for (int i = 0; i < n; i++) {
+        if (strcmp(key, "tileRenderer") == 0)
+            used += (size_t)snprintf(s + used, cap - used,
+                "%s{\"tileRenderer\":{\"onSelectCommand\":{\"watchEndpoint\":{\"videoId\":\"V%010d\"}},"
+                "\"metadata\":{\"tileMetadataRenderer\":{\"title\":{\"simpleText\":\"t\"}}}}}", i ? "," : "", i);
+        else
+            used += (size_t)snprintf(s + used, cap - used,
+                "%s{\"compactVideoRenderer\":{\"videoId\":\"V%010d\",\"title\":{\"simpleText\":\"t\"}}}",
+                i ? "," : "", i);
+    }
+    snprintf(s + used, cap - used, "]%s}", between_rows_extra ? between_rows_extra : "");
+    return s;
+}
+
+static void check_row_limit_exact(void) {
+    static yt_video_list_t page;
+    const char *keys[] = { "compactVideoRenderer", "tileRenderer" };
+    for (int k = 0; k < 2; k++) {
+        for (int extra = -1; extra <= 1; extra++) {
+            int n = YT_LIST_MAX + extra;
+            char *js = repeat_rows(keys[k], n, NULL);
+            int got = parse_str(js, &page);
+            free(js);
+            CHECK(got == (n > YT_LIST_MAX ? YT_LIST_MAX : n),
+                  "%s: %d rows in, %d out (cap %d)", keys[k], n, got, YT_LIST_MAX);
+            CHECK(yt_parse_last_dropped_items() == (n > YT_LIST_MAX ? n - YT_LIST_MAX : 0),
+                  "%s: %d rows in, %d counted as dropped", keys[k], n, yt_parse_last_dropped_items());
+        }
+    }
+}
+
+/* A row past the cap is counted and not walked into: nothing inside it can be
+ * taken for the page's own token, even when it comes before the real one in
+ * document order. (A whole row of a TV tile or a video renderer carries its
+ * own continuation-shaped command objects in real responses.) */
+static void check_token_inside_dropped_row(void) {
+    static yt_video_list_t page;
+    const char *keys[] = { "compactVideoRenderer", "tileRenderer" };
+    for (int k = 0; k < 2; k++) {
+        /* YT_LIST_MAX rows to fill the list, one more carrying a nested
+         * nextContinuationData, then the page's real token. */
+        size_t cap = (size_t)(YT_LIST_MAX + 1) * 260 + 1024;
+        char *js = malloc(cap);
+        char *rows = repeat_rows(keys[k], YT_LIST_MAX, NULL);
+        /* cut the closing "]}" of repeat_rows and append the extra row */
+        rows[strlen(rows) - 2] = '\0';
+        snprintf(js, cap,
+            "%s,{\"%s\":{\"nextContinuationData\":{\"continuation\":\"NESTED\"},"
+            "\"videoId\":\"Z%010d\",\"onSelectCommand\":{\"watchEndpoint\":{\"videoId\":\"Z%010d\"}},"
+            "\"title\":{\"simpleText\":\"t\"}}}],"
+            "\"continuations\":[{\"nextContinuationData\":{\"continuation\":\"REAL\"}}]}",
+            rows, keys[k], 0, 0);
+        free(rows);
+        int n = parse_str(js, &page);
+        free(js);
+        CHECK(n == YT_LIST_MAX, "%s: %d rows", keys[k], n);
+        CHECK(yt_parse_last_dropped_items() == 1, "%s: dropped %d", keys[k], yt_parse_last_dropped_items());
+        CHECK(strcmp(page.continuation, "REAL") == 0,
+              "%s: a token inside a dropped row must not be the page's: '%s'", keys[k], page.continuation);
+    }
+}
+
+/* The parse entry points reset the drop record, whichever one ran last. */
+static void check_drop_record_reset(void) {
+    static yt_video_list_t page;
+    static yt_channel_list_t chans;
+    size_t tlen = (size_t)YT_CONTINUATION_MAX + 10;
+    char *big = malloc(tlen + 200);
+    int w = snprintf(big, tlen + 200, "{\"c\":{\"continuations\":[{\"nextContinuationData\":{\"continuation\":\"");
+    memset(big + w, 'T', tlen);
+    snprintf(big + w + tlen, 100, "\"}}]}}");
+    const char *empty = "{}";
+    char title[40];
+    for (int which = 0; which < 4; which++) {
+        parse_str(big, &page);
+        CHECK(yt_parse_last_dropped_continuation_len() == (int)tlen, "setup: %d", yt_parse_last_dropped_continuation_len());
+        switch (which) {
+        case 0: yt_parse_video_list(empty, strlen(empty), &page); break;
+        case 1: yt_parse_search(empty, strlen(empty), &page, &chans); break;
+        case 2: yt_parse_channel_page(empty, strlen(empty), &page, title, sizeof title); break;
+        default: yt_parse_channel_list(empty, strlen(empty), &chans); break;
+        }
+        CHECK(yt_parse_last_dropped_continuation_len() == 0,
+              "entry point %d did not reset the dropped-token record: %d", which, yt_parse_last_dropped_continuation_len());
+    }
+    /* ...and each of them records its own drop. */
+    yt_parse_search(big, strlen(big), &page, &chans);
+    CHECK(yt_parse_last_dropped_continuation_len() == (int)tlen, "search: %d", yt_parse_last_dropped_continuation_len());
+    yt_parse_channel_page(big, strlen(big), &page, title, sizeof title);
+    CHECK(yt_parse_last_dropped_continuation_len() == (int)tlen, "channel page: %d", yt_parse_last_dropped_continuation_len());
+    yt_parse_channel_list(big, strlen(big), &chans);
+    CHECK(yt_parse_last_dropped_continuation_len() == (int)tlen, "channel list: %d", yt_parse_last_dropped_continuation_len());
+    free(big);
+}
+
+/* The subscribed-channels list takes the same token rules as the video lists:
+ * the next page, not a reload; whole or not at all. */
+static void check_channel_list_token(void) {
+    static yt_channel_list_t chans;
+    const char *ch = "{\"tileRenderer\":{\"contentType\":\"TILE_CONTENT_TYPE_CHANNEL\","
+                     "\"onSelectCommand\":{\"browseEndpoint\":{\"browseId\":\"UCabcdefghijklmnopqrstuv\"}},"
+                     "\"metadata\":{\"tileMetadataRenderer\":{\"title\":{\"simpleText\":\"Chan\"}}}}}";
+    char js[2048];
+    snprintf(js, sizeof js, "{\"items\":[%s],\"continuations\":[{\"nextContinuationData\":{\"continuation\":\"CHNEXT\"}},"
+             "{\"reloadContinuationData\":{\"continuation\":\"CHRELOAD\"}}]}", ch);
+    yt_parse_channel_list(js, strlen(js), &chans);
+    CHECK(strcmp(chans.continuation, "CHNEXT") == 0, "channel list token '%s'", chans.continuation);
+    snprintf(js, sizeof js, "{\"items\":[%s],\"continuations\":[{\"reloadContinuationData\":{\"continuation\":\"CHRELOAD\"}}]}", ch);
+    yt_parse_channel_list(js, strlen(js), &chans);
+    CHECK(chans.continuation[0] == '\0', "a reload is not a next page: '%s'", chans.continuation);
+    snprintf(js, sizeof js, "{\"items\":[%s],\"x\":{\"continuationCommand\":{\"token\":\"CHCMD\"}}}", ch);
+    yt_parse_channel_list(js, strlen(js), &chans);
+    CHECK(strcmp(chans.continuation, "CHCMD") == 0, "continuationCommand token '%s'", chans.continuation);
+}
+
+/* yt_parse_visitor_data on input it was never meant for. */
+static void check_visitor_hostile(void) {
+    char out[YT_VISITOR_MAX];
+    char small[8];
+    /* No quotes at all, a key without a value, a value that never closes. */
+    CHECK(yt_parse_visitor_data("", out, sizeof out) == 0 && !out[0], "empty string");
+    CHECK(yt_parse_visitor_data("visitorData", out, sizeof out) == 0 && !out[0], "bare word");
+    CHECK(yt_parse_visitor_data("\"visitorData\"", out, sizeof out) == 0 && !out[0], "key only");
+    CHECK(yt_parse_visitor_data("\"visitorData\":", out, sizeof out) == 0 && !out[0], "key and colon only");
+    CHECK(yt_parse_visitor_data("\"visitorData\":\"", out, sizeof out) == 0 && !out[0], "opening quote only");
+    CHECK(yt_parse_visitor_data("\"visitorData\":null", out, sizeof out) == 0 && !out[0], "null value");
+    CHECK(yt_parse_visitor_data("\"visitorData\":12", out, sizeof out) == 0 && !out[0], "number value");
+    CHECK(yt_parse_visitor_data("\"visitorData\": \"abc\"", out, sizeof out) == 0 && !out[0],
+          "a space after the colon is not the shape YouTube sends (compact JSON): refused, not guessed");
+    /* Every truncation of a good response is either refused or an exact prefix-free answer: never a partial id. */
+    const char *good = "{\"responseContext\":{\"visitorData\":\"CgtAbC-_%3D\",\"x\":1}}";
+    size_t glen = strlen(good);
+    for (size_t cut = 0; cut <= glen; cut++) {
+        char part[128];
+        memcpy(part, good, cut);
+        part[cut] = '\0';
+        int n = yt_parse_visitor_data(part, out, sizeof out);
+        if (n != 0)
+            CHECK(strcmp(out, "CgtAbC-_%3D") == 0, "truncated at %zu gave the partial id '%s'", cut, out);
+        else
+            CHECK(out[0] == '\0', "refused at %zu but out is '%s'", cut, out);
+    }
+    CHECK(yt_parse_visitor_data(good, out, sizeof out) == 11, "the good one is 11 chars");
+    /* A value as long as the buffer can hold, and one more. */
+    {
+        size_t cap = YT_VISITOR_MAX;
+        char *js = malloc(cap + 64);
+        for (int extra = 0; extra <= 1; extra++) {
+            size_t vlen = cap - 1 + (size_t)extra;
+            int w = sprintf(js, "{\"visitorData\":\"");
+            memset(js + w, 'A', vlen);
+            strcpy(js + w + vlen, "\"}");
+            int n = yt_parse_visitor_data(js, out, cap);
+            if (extra == 0)
+                CHECK(n == (int)vlen && strlen(out) == vlen, "a %zu-char id fits YT_VISITOR_MAX: got %d", vlen, n);
+            else
+                CHECK(n == 0 && out[0] == '\0', "a %zu-char id does not fit: got %d", vlen, n);
+        }
+        free(js);
+    }
+    /* cap 0 and 1: nothing is written past what was offered. */
+    memset(small, 'x', sizeof small);
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"a\"}", small, 0) == 0 && small[0] == 'x', "cap 0 leaves out alone");
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"a\"}", small, 1) == 0 && small[0] == '\0', "cap 1 holds no id");
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"a\"}", NULL, 8) == 0, "NULL out");
+    /* Escapes: refused whole, wherever they sit. */
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"ab\\\"cd\"}", out, sizeof out) == 0 && !out[0], "escaped quote");
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"ab\\\\cd\"}", out, sizeof out) == 0 && !out[0], "escaped backslash");
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"\\u0041\"}", out, sizeof out) == 0 && !out[0], "unicode escape");
+    CHECK(yt_parse_visitor_data("{\"visitorData\":\"abc\\", out, sizeof out) == 0 && !out[0], "backslash at the end");
+    /* An embedded NUL ends the C string: an unterminated value, refused. */
+    {
+        const char raw[] = "{\"visitorData\":\"ab\0cd\"}";
+        CHECK(yt_parse_visitor_data(raw, out, sizeof out) == 0 && !out[0], "embedded NUL");
+    }
+    /* The key inside another string: JSON escapes the quotes there, so what
+     * a title can say never has the shape of the field. The real one, later,
+     * is found. */
+    CHECK(yt_parse_visitor_data("{\"contents\":[{\"title\":{\"simpleText\":\"x \\\"visitorData\\\":\\\"EVIL\\\" y\"}}],"
+                                "\"responseContext\":{\"visitorData\":\"GOOD\"}}", out, sizeof out) == 4 &&
+          strcmp(out, "GOOD") == 0, "visitorData quoted inside a title: '%s'", out);
+    /* The word without the quote after it is no key. */
+    CHECK(yt_parse_visitor_data("{\"t\":\"my visitorData:\\\"x\\\"\"}", out, sizeof out) == 0 && !out[0], "the word in a title");
+    /* An earlier non-string field of that name stops the scan: the search is
+     * for the string shape, nothing else is looked at. */
+    CHECK(yt_parse_visitor_data("{\"visitorData\":{\"x\":1},\"responseContext\":{\"visitorData\":\"GOOD\"}}", out, sizeof out) == 4 &&
+          strcmp(out, "GOOD") == 0, "an object-valued visitorData is skipped: '%s'", out);
+}
+
+/* The parsers on truncated and garbage JSON: an error or an answer, never a
+ * crash (the sanitizer run is what makes this a test), and never a token
+ * from a response that was cut. */
+static void check_parser_garbage(void) {
+    static yt_video_list_t page;
+    static yt_channel_list_t chans;
+    char title[40];
+    size_t len;
+    char *buf = slurp("fixtures/channel_uploads_tv.json", &len);
+    int parsed = 0, refused = 0;
+    for (size_t cut = 0; cut < len; cut += (cut < 3000 ? 7 : 811)) {
+        int n = yt_parse_video_list(buf, cut, &page);
+        if (n < 0) refused++; else parsed++;
+        CHECK(n >= 0 ? page.count == n : page.count == 0 && page.continuation[0] == '\0',
+              "cut at %zu: %d rows, count %d token '%.8s'", cut, n, page.count, page.continuation);
+        yt_parse_search(buf, cut, &page, &chans);
+        yt_parse_channel_page(buf, cut, &page, title, sizeof title);
+        yt_parse_channel_list(buf, cut, &chans);
+    }
+    CHECK(refused > 100, "a cut response is refused: %d of %d", refused, refused + parsed);
+    /* The complete one still parses to what it always did. */
+    CHECK(yt_parse_video_list(buf, len, &page) >= 0 && page.count == 15, "whole response: %d rows", page.count);
+    free(buf);
+
+    const char *junk[] = { "", "\"", "}", "{", "[", "null", "true", "12", "\"x\"", "[[[[", "{\"a\":", "{\"a\":}",
+                           "{\"contents\":[{\"compactVideoRenderer\":null}]}",
+                           "{\"contents\":[{\"compactVideoRenderer\":{\"videoId\":5,\"title\":7}}]}",
+                           "{\"continuations\":[{\"nextContinuationData\":null}]}",
+                           "{\"continuations\":[{\"nextContinuationData\":{\"continuation\":5}}]}",
+                           "{\"continuations\":[{\"nextContinuationData\":{\"continuation\":null}}]}",
+                           "{\"continuationCommand\":{\"token\":[]}}",
+                           "\xff\xfe\x00\x01" };
+    for (size_t i = 0; i < sizeof junk / sizeof *junk; i++) {
+        size_t jl = i == sizeof junk / sizeof *junk - 1 ? 4 : strlen(junk[i]);
+        int n = yt_parse_video_list(junk[i], jl, &page);
+        CHECK(n <= 0 && page.count == 0 && page.continuation[0] == '\0', "junk %zu: %d rows, token '%s'", i, n, page.continuation);
+        yt_parse_search(junk[i], jl, &page, &chans);
+        yt_parse_channel_page(junk[i], jl, &page, title, sizeof title);
+        yt_parse_channel_list(junk[i], jl, &chans);
+    }
+    /* No body at all: an HTTP 200 with a zero-length answer leaves the buffer
+     * pointer NULL. */
+    CHECK(yt_parse_video_list(NULL, 0, &page) == -1, "NULL, 0");
+    /* Nesting deeper than the JSON library allows is refused, not recursed into. */
+    {
+        size_t depth = 200000;
+        char *deep = malloc(depth + 1);
+        memset(deep, '[', depth);
+        deep[depth] = '\0';
+        CHECK(yt_parse_video_list(deep, depth, &page) == -1, "200000 levels of [");
+        free(deep);
+    }
+}
+
+/* A page that is nothing but repeats of rows the list already has parses to
+ * the same rows: de-duplicating is the list's job (list_screen.c), so the
+ * parser must hand over every row, in order. */
+static void check_duplicates_pass_through(void) {
+    static yt_video_list_t page;
+    const char *row = "{\"compactVideoRenderer\":{\"videoId\":\"AAAAAAAAAAA\",\"title\":{\"simpleText\":\"t\"}}}";
+    char js[1024];
+    snprintf(js, sizeof js, "{\"items\":[%s,%s,%s]}", row, row, row);
+    int n = parse_str(js, &page);
+    CHECK(n == 3, "three identical rows parse to %d", n);
+}
+
 int main(void) {
     size_t len;
     char *buf;
@@ -403,6 +665,13 @@ int main(void) {
     check_channel_uploads();
     check_tokens_synthetic();
     check_visitor();
+    check_visitor_hostile();
+    check_row_limit_exact();
+    check_token_inside_dropped_row();
+    check_drop_record_reset();
+    check_channel_list_token();
+    check_parser_garbage();
+    check_duplicates_pass_through();
 
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL PARSER TESTS PASSED\n");
