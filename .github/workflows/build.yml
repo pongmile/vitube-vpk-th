@@ -118,6 +118,13 @@ jobs:
               tests/test_innertube.c src/yt/innertube.c src/yt/parse.c /tmp/js/*.o
           (cd tests && ASAN_OPTIONS=detect_leaks=0 /tmp/tit_san)
 
+          # The "load more" logic of the lists (list_screen.c): the real
+          # screen loop, with a scripted pad and touch panel and a feed that
+          # pages, fails, answers with no rows or is cancelled. See
+          # tests/ui_paging/p_main.c.
+          t "ui paging scenarios"
+          CC=gcc OUT=/tmp/ui_paging bash tests/ui_paging/run.sh
+
           # The download engine against a fake card and a fake server.
           t test_dl_core
           gcc -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tdl \
