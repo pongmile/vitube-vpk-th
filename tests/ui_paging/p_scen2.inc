@@ -186,3 +186,27 @@ static void s19(void) {
     hold_pad(BTN_DOWN, 120);
     call(c19_ended);
 }
+
+/* -- 20: the feed ends (the last real page has rows and no token): the list stops asking, with no spinner and no toast -- */
+static void c20_last_page(void) { h_last_page = 2; }
+static void c20_a(void) { CHECK(h_ncont == 1 && g_home.count == 106 && strcmp(g_home.continuation, "HT2") == 0, "after page 2: calls %d count %d token '%s'", h_ncont, g_home.count, g_home.continuation); }
+static void c20_b(void) {
+    CHECK(h_ncont == 2 && g_home.count == 136, "after the last page: calls %d count %d", h_ncont, g_home.count);
+    CHECK(g_home.continuation[0] == 0 && g_home.cont_surface == YT_SURF_NONE && g_home.cont_visitor[0] == 0 && g_home.cont_fails == 0,
+          "a page with no token ends the paging: '%s' %d", g_home.continuation, (int)g_home.cont_surface);
+}
+static void c20_c(void) { CHECK(h_ncont == 2, "no call once the feed has ended: %d", h_ncont); unseen("Network error"); unseen("Loading more"); }
+static void s20(void) {
+    wait(3);
+    press_n(BTN_RIGHT, 19);
+    call(c20_last_page);
+    press(BTN_DOWN); wait(2);
+    call(c20_a);
+    press_n(BTN_RIGHT, 8);
+    press(BTN_DOWN); wait(2);
+    call(c20_b);
+    press_n(BTN_RIGHT, 8);
+    press_n(BTN_DOWN, 4); wait(2);
+    drag(500, 420, 120, 4); wait(120);
+    call(c20_c);
+}
