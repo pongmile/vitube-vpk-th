@@ -105,6 +105,9 @@ typedef struct World {
     int64_t overrun;          /* one shot: send this much past the range */
     int swap_src_at_total;
     int hide_clen;            /* no Content-Length header */
+    int hops;                 /* header blocks before the answer, each a 100 and a 302 */
+    int low_total;            /* one shot: Content-Range total is not past its last byte */
+    int clen_extra;           /* one shot: Content-Length claims this many bytes too many */
     int nreq;
     int64_t req_first[256], req_last[256];
     int req_status[256];
@@ -461,11 +464,20 @@ static int f_fetch(void *u, const char *url, int64_t first, int64_t last,
         body_len = end - first + 1;
         snprintf(crange, sizeof crange, "bytes %lld-%lld/%lld",
                  (long long)(first + (w->bad_crange ? 1 : 0)), (long long)end,
-                 (long long)src_len);
+                 (long long)(w->low_total ? end : src_len));
         w->bad_crange = 0;
+        w->low_total = 0;
     }
     w->req_status[n] = status;
-    int64_t clen = w->hide_clen ? -1 : body_len;
+    int64_t clen = w->hide_clen ? -1 : body_len + w->clen_extra;
+    w->clen_extra = 0;
+    /* What libcurl hands over before the answer proper: an interim 100 and
+     * the redirect hops (googlevideo sends every download to another host).
+     * Neither is an answer, whatever its status says. */
+    for (int hop = 0; hop < w->hops; hop++) {
+        if (sink->headers(sink->ctx, 100, -1, "")) return DL_NET_ABORTED;
+        if (sink->headers(sink->ctx, 302, 0, "")) return DL_NET_ABORTED;
+    }
     if (sink->headers(sink->ctx, status, clen, crange)) return DL_NET_ABORTED;
     if (status >= 400) return DL_NET_OK; /* never reached: the core refuses */
 
@@ -1063,6 +1075,133 @@ static void test_range_ignored_or_wrong(void) {
     run(w, 600000);
     CHECK(item(w, ID_A).state == DL_DONE, "done without Content-Length");
     CHECK(file_equals_src(w, ID_A, "mp4"), "identical");
+    world_free(w);
+}
+
+static void hook_kill_after_mib(World *w) {
+    FFile *p = file_of(w, ID_A, "part");
+    if (p && p->size >= MIB) w->kill_now = 1;
+}
+
+/* The pieces of the response matrix the first tests above do not reach:
+ * header blocks that are not the answer, answers that contradict
+ * themselves, every status that means "this URL is dead", and a request
+ * that must be cut when the user (or a video) needs the line. */
+static void test_response_matrix(void) {
+    /* Interim 100 and redirect hops in front of the real answer, on every
+     * request: the 3xx must not be taken for the response, or every download
+     * from googlevideo would fail on its redirect. */
+    World *w = world_new();
+    core_new(w);
+    w->hops = 2;
+    enq(w, ID_A, "A");
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE, "done behind redirects (%d)", item(w, ID_A).state);
+    CHECK(w->nreq == 3, "three requests, none repeated (%d)", w->nreq);
+    CHECK(file_equals_src(w, ID_A, "mp4"), "identical");
+    world_free(w);
+
+    /* ... and the final answer after the hops is still judged: a 403 there
+     * renews the URL. */
+    w = world_new();
+    core_new(w);
+    w->hops = 1;
+    enq(w, ID_A, "A");
+    run_until_bytes(w, ID_A, 4 * MIB);
+    w->token++;
+    run(w, 600000);
+    CHECK(item(w, ID_A).state == DL_DONE && w->resolve_calls == 2, "403 behind a redirect: renewed");
+    CHECK(file_equals_src(w, ID_A, "mp4"), "identical");
+    world_free(w);
+
+    /* 404 and 410 are as dead as 403; 429, 500 and 503 are not the URL's
+     * fault. */
+    static const int dead[] = { 403, 404, 410 }, busy[] = { 429, 500, 503 };
+    for (int i = 0; i < 3; i++) {
+        w = world_new();
+        core_new(w);
+        enq(w, ID_A, "A");
+        run_until_bytes(w, ID_A, 4 * MIB);
+        w->force_status = dead[i];
+        run(w, 600000);
+        CHECK(item(w, ID_A).state == DL_DONE && w->resolve_calls == 2,
+              "%d: a new URL (%d resolves)", dead[i], w->resolve_calls);
+        CHECK(file_equals_src(w, ID_A, "mp4"), "identical after %d", dead[i]);
+        world_free(w);
+
+        w = world_new();
+        core_new(w);
+        enq(w, ID_A, "A");
+        run_until_bytes(w, ID_A, 4 * MIB);
+        w->force_status = busy[i];
+        CHECK(run_until(w, ID_A, DL_WAITING, 60000), "%d: waits", busy[i]);
+        CHECK(item(w, ID_A).retry_in_s == 1 && w->resolve_calls == 1,
+              "%d: retried after a second with the same URL", busy[i]);
+        run(w, 600000);
+        CHECK(item(w, ID_A).state == DL_DONE && w->resolve_calls == 1, "%d: done", busy[i]);
+        CHECK(file_equals_src(w, ID_A, "mp4"), "identical after %d", busy[i]);
+        world_free(w);
+    }
+
+    /* Answers that contradict themselves are refused before a byte is kept. */
+    for (int variant = 0; variant < 2; variant++) {
+        w = world_new();
+        core_new(w);
+        if (variant == 0) w->low_total = 1;     /* "bytes 0-4194303/4194303" */
+        else w->clen_extra = 1;                 /* Content-Length one too long */
+        enq(w, ID_A, "A");
+        CHECK(run_until(w, ID_A, DL_WAITING, 60000), "variant %d refused", variant);
+        CHECK(item(w, ID_A).bytes_done == 0, "variant %d: no byte accepted", variant);
+        run(w, 600000);
+        CHECK(item(w, ID_A).state == DL_DONE && w->nreq == 4, "variant %d: then fine (%d)",
+              variant, w->nreq);
+        CHECK(file_equals_src(w, ID_A, "mp4"), "variant %d: identical", variant);
+        world_free(w);
+    }
+
+    /* A server that never honours a range and drops every transfer: the
+     * restarts are bounded, the user is told. */
+    w = world_new();
+    core_new(w);
+    w->ignore_range = 1;
+    w->on_piece = hook_kill_after_mib;
+    enq(w, ID_A, "A");
+    run(w, 3600000);
+    DlItem it = item(w, ID_A);
+    CHECK(it.state == DL_FAILED && it.error == DL_ERR_NETWORK,
+          "gave up (%d, %d)", it.state, it.error);
+    CHECK(w->nreq <= 2 * (DL_RESTART_LIMIT + 2), "a bounded number of requests (%d)", w->nreq);
+    world_free(w);
+
+    /* An online video starts, or the user deletes the item, in the middle of
+     * a chunk: the request is cut then, not at the end of its 4 MiB. */
+    w = world_new();
+    core_new(w);
+    w->piece = 10007;
+    w->hook_at = 1000000;
+    w->hook = hook_hold;
+    enq(w, ID_A, "A");
+    run(w, 5000);
+    it = item(w, ID_A);
+    CHECK(it.state == DL_WAITING && it.bytes_done >= 1000000 && it.bytes_done < 1100000,
+          "cut at once by the playback (%lld)", (long long)it.bytes_done);
+    /* "Try now" does not break the hold. */
+    int reqs = w->nreq;
+    dl_core_resume(w->core, ID_A);
+    for (int i = 0; i < 50; i++) { pump(w); w->now += 10000; }
+    CHECK(w->nreq == reqs && item(w, ID_A).state == DL_WAITING, "retry is no use during playback");
+    world_free(w);
+
+    w = world_new();
+    core_new(w);
+    w->piece = 10007;
+    w->hook_at = 1000000;
+    w->hook = hook_delete_a;
+    enq(w, ID_A, "A");
+    run(w, 5000);
+    CHECK(!has_item(w, ID_A), "deleted");
+    CHECK(w->max_part < 1100000, "cut at once by the delete (.part reached %lld)",
+          (long long)w->max_part);
     world_free(w);
 }
 
@@ -2232,6 +2371,8 @@ static void test_report_bad_file_and_local_path(void) {
     CHECK(file_of(w, ID_A, "mp4") != NULL, "the file itself is left alone");
     reqs = w->nreq;
     dl_core_resume(w->core, ID_A);
+    CHECK(run_until(w, ID_A, DL_DOWNLOADING, 60000), "retry starts");
+    CHECK(file_of(w, ID_A, "mp4") == NULL, "the unplayable file is gone before the new bytes");
     run(w, 600000);
     CHECK(item(w, ID_A).state == DL_DONE, "retry downloads it");
     CHECK(w->nreq > reqs && w->req_first[reqs] == 0, "from byte 0, not from the old file");
@@ -2722,6 +2863,7 @@ int main(void) {
     test_url_age();
     test_new_length_restarts();
     test_range_ignored_or_wrong();
+    test_response_matrix();
     test_disk_full();
     test_free_space_policy();
     test_verify();
