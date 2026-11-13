@@ -24,7 +24,9 @@ defaults:
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # Pinned: "ubuntu-latest" moves to a newer image (and a newer gcc, with
+    # other defaults) on GitHub's schedule, and this job gates the release.
+    runs-on: ubuntu-24.04
     # test_hls runs threads; a deadlock must not hold the runner for hours.
     timeout-minutes: 15
     steps:
