@@ -72,9 +72,19 @@ typedef enum {
  * token to "search" as the ANDROID client, so a browse token (Start, a
  * channel's videos) was a 400 or an empty page and only the search list ever
  * paged. A list now remembers the surface its token came from
- * (yt_video_list_t.surface) and yt_continue() looks the request up here;
- * it_list_call() stamps the surface with the reverse lookup. Both directions
- * read the same rows, so they cannot drift apart.
+ * (yt_video_list_t.surface) and yt_continue() looks the request up here.
+ *
+ * The stamp goes the other way, but is NOT inferred from the request. It used
+ * to be (a lookup of the request's endpoint, client and auth in this table),
+ * and that is a trap: the day someone adds an anonymous TV browse for some
+ * other purpose, it would match the channel-uploads row, and its pages would
+ * be stamped, and offered to the user, as a route nobody verified for them.
+ * Every call site now NAMES the surface of the page it fetches (YT_SURF_NONE
+ * for the ones with no route), and stamp_surface() below only checks that the
+ * request really made is the row of the surface it was given. A new call that
+ * names nothing does not compile; one that names YT_SURF_NONE changes nothing
+ * about paging; one that names a surface for a request that is not its row is
+ * stamped NONE and logged.
  *
  * `fields` is what the CONTINUATION request asks for (page 1 of the same
  * surface uses the same, see the call sites). `needs_visitor`: the token is
@@ -122,16 +132,24 @@ static const it_route_t *route_for_surface(yt_surface_t surface) {
     return NULL; /* YT_SURF_NONE, the reserved TV/ANDROID ones, anything else */
 }
 
-/* The surface a request to (endpoint, client, with_auth) belongs to; NONE for
- * a request that has no continuation route (see the table's note). */
-static yt_surface_t surface_of(const char *endpoint, it_client_t client,
-                               int with_auth) {
-    for (size_t i = 0; i < sizeof g_routes / sizeof *g_routes; i++) {
-        const it_route_t *r = &g_routes[i];
-        if (r->client == client && (r->with_auth != 0) == (with_auth != 0) &&
-            strcmp(r->endpoint, endpoint) == 0)
-            return r->surface;
-    }
+/* The surface a page is stamped with: the one its call site NAMED, provided
+ * the request that was actually made (endpoint, client, with_auth) is that
+ * surface's row in the table; YT_SURF_NONE otherwise. A page stamped NONE is
+ * never paged (video_list_absorb drops its token), so everything doubtful ends
+ * here: no row for the surface (YT_SURF_NONE itself, the reserved TV/ANDROID
+ * ones), or a row for a different request, in which case the token would be
+ * sent back somewhere that did not issue it. */
+static yt_surface_t stamp_surface(yt_surface_t surface, const char *endpoint,
+                                  it_client_t client, int with_auth) {
+    if (surface == YT_SURF_NONE) return YT_SURF_NONE;
+    const it_route_t *r = route_for_surface(surface);
+    if (!r) return YT_SURF_NONE;
+    if (r->client == client && (r->with_auth != 0) == (with_auth != 0) &&
+        strcmp(r->endpoint, endpoint) == 0)
+        return surface;
+    vt_log("surface %d named for a %s request (client %d, auth %d) that is not "
+           "its route, not pageable", (int)surface, endpoint, (int)client,
+           with_auth != 0);
     return YT_SURF_NONE;
 }
 
@@ -330,20 +348,25 @@ static void log_parse_drops(const char *what) {
  * continuation != 0: this is a "next page" request, and `visitor` is the id
  * its token is bound to (NULL where the surface has none).
  *
- * On success the page is stamped here, not in the callers: its surface from
- * the (endpoint, client, auth) actually used, so a fallback that changes the
- * client between two calls (home) can never leave the page labelled with the
- * request that failed; and, for a surface whose tokens are bound to a visitor
- * id, that id. A first page takes it from ITS OWN response (the token was
- * issued under that); a continuation page carries forward the one it was sent
- * with and never reads a new one, so the whole list keeps a single id. A first
- * page that has no visitorData to take is not pageable (surface NONE): its
- * token would only ever bring back an empty shell.
+ * `surface` is what the CALLER says this request is (YT_SURF_NONE for a call
+ * whose pages have no continuation route). It is a parameter of every call and
+ * not guessed from the request, so adding a call cannot change paging by
+ * accident; each call of a fallback chain names its own, so a page is never
+ * labelled with the request that failed before it. stamp_surface() keeps the
+ * name only when the request made is that surface's row of the table.
+ *
+ * On success the page is stamped here, not in the callers: its surface, and,
+ * for a surface whose tokens are bound to a visitor id, that id. A first page
+ * takes it from ITS OWN response (the token was issued under that); a
+ * continuation page carries forward the one it was sent with and never reads
+ * a new one, so the whole list keeps a single id. A first page that has no
+ * visitorData to take is not pageable (surface NONE): its token would only
+ * ever bring back an empty shell.
  *
  * The parser clears `out` first, so a retry of the same task starts clean as
  * well. */
 static int it_list_call(const char *endpoint, const char *fields, json_t *body,
-                        int with_auth, it_client_t client,
+                        int with_auth, it_client_t client, yt_surface_t surface,
                         const char *visitor, int continuation,
                         volatile int *cancel, yt_video_list_t *out) {
     http_buf_t buf = {0};
@@ -352,7 +375,7 @@ static int it_list_call(const char *endpoint, const char *fields, json_t *body,
     if (ret == 0) {
         int count = yt_parse_video_list(buf.data, buf.len, out);
         if (count >= 0) {
-            out->surface = surface_of(endpoint, client, with_auth);
+            out->surface = stamp_surface(surface, endpoint, client, with_auth);
             const it_route_t *route = route_for_surface(out->surface);
             if (route && route->needs_visitor) {
                 if (continuation) {
@@ -404,9 +427,12 @@ int yt_search(const char *query, volatile int *cancel, yt_video_list_t *out,
                       IT_CLIENT_ANDROID, NULL, cancel, &buf);
     if (ret == 0) {
         int count = yt_parse_search(buf.data, buf.len, out, out_channels);
-        /* Not it_list_call(), so the page is stamped here: the continuation
-         * of this response goes back to search as ANDROID, anonymous. */
-        if (count >= 0) out->surface = surface_of("search", IT_CLIENT_ANDROID, 0);
+        /* Not it_list_call(), so the page is stamped here, by name: the
+         * continuation of this response goes back to search as ANDROID,
+         * anonymous. */
+        if (count >= 0)
+            out->surface = stamp_surface(YT_SURF_SEARCH, "search",
+                                         IT_CLIENT_ANDROID, 0);
         int channels = out_channels ? out_channels->count : 0;
         vt_log("parse search: %d videos, %d channels, continuation=%u chars",
                count, channels, (unsigned)strlen(out->continuation));
@@ -439,15 +465,16 @@ int yt_continue(const char *continuation, yt_surface_t surface,
     }
     return it_list_call(route->endpoint, route->fields,
                         json_pack("{s:s}", "continuation", continuation),
-                        route->with_auth, route->client,
+                        route->with_auth, route->client, route->surface,
                         route->needs_visitor ? visitor : NULL, 1, cancel, out);
 }
 
 int yt_related(const char *video_id, volatile int *cancel,
                yt_video_list_t *out) {
+    /* Related videos: nothing asks for a second page, so no route (NONE). */
     return it_list_call("next", IT_LIST_FIELDS,
                         json_pack("{s:s}", "videoId", video_id), 0,
-                        IT_CLIENT_ANDROID, NULL, 0, cancel, out);
+                        IT_CLIENT_ANDROID, YT_SURF_NONE, NULL, 0, cancel, out);
 }
 
 int yt_home_feed(volatile int *cancel, yt_video_list_t *out) {
@@ -479,16 +506,20 @@ int yt_home_feed(volatile int *cancel, yt_video_list_t *out) {
      * whose TV browse comes back empty, which is what a revoked or
      * reputation-gated token looks like from here. */
     if (yt_oauth_logged_in()) {
+        /* NONE, not YT_SURF_BROWSE_TV: that one is reserved until a signed-in
+         * capture shows where this feed's own continuation sits. */
         int ret = it_list_call("browse", IT_LIST_FIELDS,
                                json_pack("{s:s}", "browseId", "FEwhat_to_watch"),
-                               1, IT_CLIENT_TV, NULL, 0, cancel, out);
+                               1, IT_CLIENT_TV, YT_SURF_NONE, NULL, 0, cancel,
+                               out);
         if (ret == 0 && out->count > 0) return 0;
         if (cancel && *cancel) return ret;
         vt_log("home: tv feed empty (ret=%d), retrying anonymously", ret);
     }
     return it_list_call("browse", IT_WEB_BROWSE_FIELDS,
                         json_pack("{s:s}", "browseId", "FEwhat_to_watch"), 0,
-                        IT_CLIENT_VISIONOS, NULL, 0, cancel, out);
+                        IT_CLIENT_VISIONOS, YT_SURF_BROWSE_WEB, NULL, 0, cancel,
+                        out);
 }
 
 int yt_subscriptions_feed(volatile int *cancel, yt_video_list_t *out) {
@@ -497,7 +528,7 @@ int yt_subscriptions_feed(volatile int *cancel, yt_video_list_t *out) {
      * as a fallback in case the TV path regresses. */
     int ret = it_list_call("browse", IT_LIST_FIELDS,
                            json_pack("{s:s}", "browseId", "FEsubscriptions"),
-                           1, IT_CLIENT_TV, NULL, 0, cancel, out);
+                           1, IT_CLIENT_TV, YT_SURF_NONE, NULL, 0, cancel, out);
     /* Sorted explicitly: the stable sort is a no-op when YouTube already
      * returns the feed newest-first, and a real fix when the TV surface
      * groups it by channel or by shelf instead. */
@@ -506,12 +537,12 @@ int yt_subscriptions_feed(volatile int *cancel, yt_video_list_t *out) {
         return 0;
     }
     vt_log("subs via tv client failed, trying android");
-    /* Neither page of this feed is pageable yet (stamped NONE by
-     * it_list_call; see the route table for why), so the Abos tab shows one
-     * page, as it always did. */
+    /* Neither page of this feed is pageable yet (both name NONE; see the
+     * route table for why), so the Abos tab shows one page, as it always
+     * did. */
     ret = it_list_call("browse", IT_LIST_FIELDS,
                        json_pack("{s:s}", "browseId", "FEsubscriptions"), 1,
-                       IT_CLIENT_ANDROID, NULL, 0, cancel, out);
+                       IT_CLIENT_ANDROID, YT_SURF_NONE, NULL, 0, cancel, out);
     if (ret == 0) yt_sort_newest_first(out);
     return ret;
 }
@@ -568,8 +599,11 @@ int yt_channel_videos(const char *channel_id, volatile int *cancel,
         int count = yt_parse_channel_page(buf.data, buf.len, out,
                                           channel_title, channel_title_cap);
         /* Anonymous TV, as requested above: the uploads token goes back the
-         * same way (YT_SURF_CHANNEL_TV). Not it_list_call, so stamped here. */
-        if (count >= 0) out->surface = surface_of("browse", IT_CLIENT_TV, 0);
+         * same way (YT_SURF_CHANNEL_TV). Not it_list_call, so stamped here,
+         * by name. */
+        if (count >= 0)
+            out->surface = stamp_surface(YT_SURF_CHANNEL_TV, "browse",
+                                         IT_CLIENT_TV, 0);
         yt_sort_newest_first(out);
         vt_log("parse channel uploads: %d videos, continuation=%u chars, "
                "surface=%d", count, (unsigned)strlen(out->continuation),

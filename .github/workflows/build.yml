@@ -107,15 +107,17 @@ jobs:
           # The request side of the same code: innertube.c itself, against a
           # scripted network, so where a continuation token is sent back to
           # (client, endpoint, fields filter, visitor id) is checked and not
-          # only what the parser makes of the answer.
+          # only what the parser makes of the answer. The test #includes
+          # innertube.c (its static stamping rule is under test), so the file
+          # is not on the command line.
           t test_innertube
           gcc -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tit \
-              tests/test_innertube.c src/yt/innertube.c src/yt/parse.c /tmp/js/*.o
+              tests/test_innertube.c src/yt/parse.c /tmp/js/*.o
           (cd tests && /tmp/tit)
           t "test_innertube (ASan, UBSan)"
           gcc -g -fsanitize=address,undefined -fno-sanitize-recover=all \
               -Isrc -Iexternal/jansson -Wall -Wextra -Werror -o /tmp/tit_san \
-              tests/test_innertube.c src/yt/innertube.c src/yt/parse.c /tmp/js/*.o
+              tests/test_innertube.c src/yt/parse.c /tmp/js/*.o
           (cd tests && ASAN_OPTIONS=detect_leaks=0 /tmp/tit_san)
 
           # The "load more" logic of the lists (list_screen.c): the real

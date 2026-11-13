@@ -1,5 +1,9 @@
 /* Host-side tests of the request side of src/yt/innertube.c: the real file,
- * linked with the real parser and jansson, against a scripted network.
+ * #included below (so that its static functions can be called, see
+ * test_stamp_is_named), with the real parser and jansson, against a scripted
+ * network. Build it WITHOUT innertube.c on the command line:
+ *   gcc -Isrc -Iexternal/jansson tests/test_innertube.c src/yt/parse.c <jansson objects>
+ * -DINNERTUBE_SRC=\"/path/modified.c\" runs a modified copy (mutation tests).
  *
  * What test_parse.c cannot see: WHERE a continuation token is sent. Every
  * request is recorded (URL, headers, body) and answered from a script, so the
@@ -25,6 +29,7 @@
 
 #include <jansson.h>
 
+#include "log.h"
 #include "net/http.h"
 #include "ui/strings.h"
 #include "yt/innertube.h"
@@ -82,6 +87,15 @@ int http_get(const char *u, const char *const *h, volatile int *c, http_buf_t *o
     (void)u; (void)h; (void)c; (void)o; (void)s;
     return -1;
 }
+
+/* The code under test, in this translation unit: the stamping rule and
+ * it_list_call() are static, and what they must do for a call nobody has made
+ * yet cannot be shown through the calls that exist. Everything it links
+ * against is above. */
+#ifndef INNERTUBE_SRC
+#define INNERTUBE_SRC "yt/innertube.c"
+#endif
+#include INNERTUBE_SRC
 
 /* ---- the scripted network ---------------------------------------------------------- */
 typedef struct {
@@ -548,6 +562,91 @@ static void test_dropped_logged(void) {
     CHECK(yt_parse_last_dropped_continuation_len() == (int)n, "dropped length %d", yt_parse_last_dropped_continuation_len());
 }
 
+/* ---- the stamp is named by the call, never guessed from the request ------------------------- */
+
+/* One request shape and the surface whose route it is (NONE: no route). */
+typedef struct {
+    const char *endpoint;
+    it_client_t client;
+    int with_auth;
+    yt_surface_t route;
+    const char *what;
+} Shape;
+
+static void test_stamp_is_named(void) {
+    /* The routes that exist, written out here and not read from g_routes:
+     * search, the signed-out Start feed and a channel's uploads. */
+    static const Shape shapes[] = {
+        { "search", IT_CLIENT_ANDROID,  0, YT_SURF_SEARCH,     "search, ANDROID, anonymous" },
+        { "browse", IT_CLIENT_VISIONOS, 0, YT_SURF_BROWSE_WEB, "browse, VISIONOS, anonymous" },
+        { "browse", IT_CLIENT_TV,       0, YT_SURF_CHANNEL_TV, "browse, TV, anonymous" },
+        { "browse", IT_CLIENT_TV,       1, YT_SURF_NONE,       "browse, TV, OAuth" },
+        { "browse", IT_CLIENT_ANDROID,  1, YT_SURF_NONE,       "browse, ANDROID, OAuth" },
+        { "next",   IT_CLIENT_ANDROID,  0, YT_SURF_NONE,       "next, ANDROID, anonymous" },
+        { "browse", IT_CLIENT_ANDROID,  0, YT_SURF_NONE,       "browse, ANDROID, anonymous" },
+        { "search", IT_CLIENT_TV,       0, YT_SURF_NONE,       "search, TV, anonymous" },
+    };
+    static const yt_surface_t named[] = { YT_SURF_NONE, YT_SURF_SEARCH, YT_SURF_BROWSE_WEB,
+                                          YT_SURF_CHANNEL_TV, YT_SURF_BROWSE_TV, YT_SURF_BROWSE_ANDROID };
+    /* Every name against every request shape: the name survives only where the
+     * request is that surface's own route. Nothing is ever stamped because of
+     * what the request looks like. */
+    for (size_t s = 0; s < sizeof named / sizeof *named; s++)
+        for (size_t q = 0; q < sizeof shapes / sizeof *shapes; q++) {
+            const Shape *sh = &shapes[q];
+            yt_surface_t want = (named[s] != YT_SURF_NONE && named[s] == sh->route) ? named[s] : YT_SURF_NONE;
+            yt_surface_t got = stamp_surface(named[s], sh->endpoint, sh->client, sh->with_auth);
+            CHECK(got == want, "named %d for [%s]: stamped %d, want %d", (int)named[s], sh->what, (int)got, (int)want);
+        }
+
+    /* The case the old inference got wrong in waiting: an anonymous TV browse
+     * made for some other purpose (it has the request shape of a channel's
+     * uploads) that names no surface. It was stamped CHANNEL_TV by its look
+     * alone and its token offered for paging; now it is NONE. The page does
+     * carry a token, so this is the case where being NONE is what keeps the
+     * list from offering a route nobody verified. */
+    static yt_video_list_t out;
+    reset();
+    g_logged_in = 0;
+    queue_file("fixtures/channel_uploads_tv.json");
+    int rc = it_list_call("browse", IT_LIST_FIELDS, json_pack("{s:s}", "browseId", "VLUUunlisted"), 0,
+                          IT_CLIENT_TV, YT_SURF_NONE, NULL, 0, NULL, &out);
+    CHECK(rc == 0 && out.count > 0, "setup: rc %d, %d rows", rc, out.count);
+    CHECK(out.continuation[0] != '\0', "setup: this page carries a token");
+    CHECK(strcmp(g_req[0].url, API_URL "browse?prettyPrint=false&" PLAIN_FIELDS) == 0 &&
+          strcmp(client_name(&g_req[0]), "7") == 0 && !has_header(&g_req[0], "Authorization"),
+          "setup: the request has the shape of a channel's uploads: %s / client %s", g_req[0].url, client_name(&g_req[0]));
+    CHECK(out.surface == YT_SURF_NONE, "an unlisted call is stamped NONE, got %d", (int)out.surface);
+
+    /* ...and naming the surface is what makes the same request pageable. */
+    reset();
+    queue_file("fixtures/channel_uploads_tv.json");
+    rc = it_list_call("browse", IT_LIST_FIELDS, json_pack("{s:s}", "browseId", "VLUUlisted"), 0,
+                      IT_CLIENT_TV, YT_SURF_CHANNEL_TV, NULL, 0, NULL, &out);
+    CHECK(rc == 0 && out.surface == YT_SURF_CHANNEL_TV, "a call that names it: rc %d, stamped %d", rc, (int)out.surface);
+
+    /* A name for a request that is not its route: not pageable, and no visitor
+     * id taken for a route that does not exist. */
+    reset();
+    queue_file_with_visitor("fixtures/browse_home_visionos.json", "VISITOR_X");
+    rc = it_list_call("browse", IT_WEB_BROWSE_FIELDS, json_pack("{s:s}", "browseId", "FEwhat_to_watch"), 0,
+                      IT_CLIENT_VISIONOS, YT_SURF_CHANNEL_TV, NULL, 0, NULL, &out);
+    CHECK(rc == 0 && out.count == 76 && out.surface == YT_SURF_NONE && out.visitor[0] == '\0',
+          "VISIONOS browse naming the TV route: rc %d, %d rows, stamped %d, visitor '%s'", rc, out.count, (int)out.surface, out.visitor);
+    reset();
+    queue_file_with_visitor("fixtures/browse_home_visionos.json", "VISITOR_X");
+    rc = it_list_call("browse", IT_WEB_BROWSE_FIELDS, json_pack("{s:s}", "browseId", "FEwhat_to_watch"), 0,
+                      IT_CLIENT_VISIONOS, YT_SURF_NONE, NULL, 0, NULL, &out);
+    CHECK(rc == 0 && out.surface == YT_SURF_NONE && out.visitor[0] == '\0',
+          "VISIONOS browse naming nothing: stamped %d, visitor '%s'", (int)out.surface, out.visitor);
+    reset();
+    queue_file_with_visitor("fixtures/browse_home_visionos.json", "VISITOR_X");
+    rc = it_list_call("browse", IT_WEB_BROWSE_FIELDS, json_pack("{s:s}", "browseId", "FEwhat_to_watch"), 0,
+                      IT_CLIENT_VISIONOS, YT_SURF_BROWSE_WEB, NULL, 0, NULL, &out);
+    CHECK(rc == 0 && out.surface == YT_SURF_BROWSE_WEB && strcmp(out.visitor, "VISITOR_X") == 0,
+          "VISIONOS browse naming its route: stamped %d, visitor '%s'", (int)out.surface, out.visitor);
+}
+
 int main(void) {
     /* Statics inside innertube.c (the latched visitor id) outlive each test:
      * every test names the ids it relies on. */
@@ -564,6 +663,7 @@ int main(void) {
     test_failures();
     test_limits();
     test_dropped_logged();
+    test_stamp_is_named();
     reset();
     if (failures) { printf("%d FAILURES\n", failures); return 1; }
     printf("ALL INNERTUBE TESTS PASSED\n");
