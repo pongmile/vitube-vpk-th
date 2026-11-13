@@ -13,7 +13,7 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "ViTube")
 set(VITA_TITLEID  "VTUB00001")
-set(VITA_VERSION  "02.01")
+set(VITA_VERSION  "02.10")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
