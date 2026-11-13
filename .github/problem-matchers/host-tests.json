@@ -1,0 +1,62 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "host-tests-gcc",
+      "pattern": [
+        {
+          "regexp": "^(\\S[^:]*):(\\d+):(\\d+):\\s+(?:fatal\\s+)?(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      ]
+    },
+    {
+      "owner": "host-tests-ld",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(?:/usr/bin/)?ld: (.*)$",
+          "message": 1
+        }
+      ]
+    },
+    {
+      "owner": "host-tests-assert",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^FAIL (\\S[^:]*):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        }
+      ]
+    },
+    {
+      "owner": "host-tests-ubsan",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(\\S[^:]*):(\\d+):(\\d+): runtime error: (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      ]
+    },
+    {
+      "owner": "host-tests-asan",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^==\\d+==ERROR: (.*)$",
+          "message": 1
+        }
+      ]
+    }
+  ]
+}
