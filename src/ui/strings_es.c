@@ -214,8 +214,8 @@ const char *const vt_strings_es[VT_STR_COUNT] = {
     [S_DL_ERR_SPACE_FREED] = "Ya hay espacio: reintenta",
     [S_DL_ERR_DISK_FULL] = "La tarjeta de memoria está llena",
     [S_DL_ERR_NOT_DOWNLOADABLE] = "Este vídeo no se puede descargar",
-    [S_DL_ERR_VERIFY] = "El archivo está dañado — reintentar lo descarga de "
-                        "nuevo",
+    [S_DL_ERR_VERIFY] = "El archivo está dañado — reintenta para "
+                        "descargarlo de nuevo",
     [S_DL_ERR_NETWORK] = "Problema de red — reintenta para continuar",
     [S_DL_ERR_URL] = "No se obtuvo el enlace del vídeo — reintenta más tarde",
     [S_DL_ERR_IO] = "No se pudo guardar el archivo — reintenta",

@@ -215,8 +215,8 @@ const char *const vt_strings_fr[VT_STR_COUNT] = {
     [S_DL_ERR_SPACE_FREED] = "Il y a de la place : réessayez",
     [S_DL_ERR_DISK_FULL] = "La carte mémoire est pleine",
     [S_DL_ERR_NOT_DOWNLOADABLE] = "Cette vidéo ne peut pas être téléchargée",
-    [S_DL_ERR_VERIFY] = "Fichier endommagé — réessayer le télécharge à "
-                        "nouveau",
+    [S_DL_ERR_VERIFY] = "Fichier endommagé — réessayez pour le "
+                        "télécharger à nouveau",
     [S_DL_ERR_NETWORK] = "Problème réseau — réessayez pour continuer",
     [S_DL_ERR_URL] = "Lien de la vidéo introuvable — réessayez plus tard",
     [S_DL_ERR_IO] = "Impossible d'enregistrer le fichier — réessayez",

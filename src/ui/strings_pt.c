@@ -215,7 +215,7 @@ const char *const vt_strings_pt[VT_STR_COUNT] = {
     [S_DL_ERR_SPACE_FREED] = "Agora há espaço: tente de novo",
     [S_DL_ERR_DISK_FULL] = "O cartão de memória está cheio",
     [S_DL_ERR_NOT_DOWNLOADABLE] = "Este vídeo não pode ser baixado",
-    [S_DL_ERR_VERIFY] = "Arquivo danificado — tentar de novo baixa tudo "
+    [S_DL_ERR_VERIFY] = "Arquivo danificado — tente de novo para baixar "
                         "outra vez",
     [S_DL_ERR_NETWORK] = "Problema de rede — tente de novo para continuar",
     [S_DL_ERR_URL] = "Não foi possível obter o link do vídeo — tente mais "
