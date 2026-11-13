@@ -14,8 +14,35 @@
  * fixtures) — keep generous headroom above that. */
 #define YT_THUMB_URL_MAX 256
 #define YT_URL_MAX 4096
-#define YT_CONTINUATION_MAX 2048
-#define YT_LIST_MAX 60
+/* Room for one continuation token, NUL included. A token that does not fit
+ * is dropped whole (parse.c set_continuation), never truncated: a cut token
+ * looks valid to every caller and is rejected by the API.
+ *
+ * 2048 was too small for the surface this app lands on first: the anonymous
+ * VISIONOS home feed (browse, www.youtube.com) hands out a 4482-character
+ * next-page token on page 1 (checked 2026-11-13 in
+ * tests/fixtures/browse_home_visionos.json), so the Start tab had no token
+ * and could never load a second page. And a token grows with every page it
+ * is passed on: measured live on that feed, page 2 returns a 7498-character
+ * one, page 3 10788, page 4 12892. 16384 carries that through the page cap
+ * (list_screen.c ITEMS_MAX) with a margin; the drop stays visible
+ * (yt_parse_last_dropped_continuation_len) should it ever not be enough. The
+ * other token in each response, reloadContinuationData, is never a next page
+ * and is ignored by key, not by size. Every list carries one of these buffers
+ * (all static, or inside one fetch task on the main thread's stack). */
+#define YT_CONTINUATION_MAX 16384
+/* The visitor id a continuation has to be sent with: the visitorData string
+ * of the response that issued the token (~445 characters seen, base64url).
+ * See yt_video_list_t.visitor. */
+#define YT_VISITOR_MAX 768
+/* Rows one response can hand over. The anonymous home feed delivers 66 to 84
+ * video renderers in a single page (randomised per call; 76 in the fixture);
+ * with a cap of 60 the tail of every page was silently dropped, and since the
+ * page's continuation token starts after it, paging could never bring those
+ * rows back. 128 leaves room above the largest page seen. The cap also sizes
+ * the channel lists (yt_channel_list_t, and ChannelListState in
+ * list_screen.c). */
+#define YT_LIST_MAX 128
 #define YT_FORMATS_MAX 4         /* progressive formats rarely exceed 1-2 today */
 
 typedef struct {
@@ -36,10 +63,58 @@ typedef struct {
     int age_min;
 } yt_video_t;
 
+/* Which request produced a page — and therefore where its continuation token
+ * has to be sent back. A token is only good at the request that issued it: a
+ * browse token posted to "search" is an HTTP 400 or an empty page, and the old
+ * yt_continue() did exactly that for everything because it hardcoded search +
+ * ANDROID. Lists store the surface next to the token (and, where one is
+ * needed, the visitor id) and hand them to yt_continue(); innertube.c is the
+ * only place that maps a surface to a request (one table, both directions).
+ *
+ * A surface is "pageable" when yt_continue() has a route for it. Only the
+ * ones verified against the live API are; a page from any other request is
+ * stamped NONE so no list ever offers a "load more" that cannot work.
+ *
+ * NONE must stay 0: a zeroed or memset list means "no surface" and the UI
+ * relies on that after a reset. */
+typedef enum {
+    YT_SURF_NONE = 0,
+    /* Pageable: */
+    YT_SURF_SEARCH,         /* search, ANDROID, anonymous */
+    YT_SURF_BROWSE_WEB,     /* browse, VISIONOS on www.youtube.com, anonymous,
+                             * AND the visitor id the token was issued under:
+                             * the signed-out Start feed */
+    YT_SURF_CHANNEL_TV,     /* browse, TV, anonymous, no visitor: a channel's
+                             * uploads (a VLUU... playlist) */
+    /* Reserved, NOT pageable yet: these need a signed-in capture to confirm
+     * where the feed's own continuation sits (in the Abos feed the first
+     * nextContinuationData in document order continues one shelf, not the
+     * feed). Pages from them are stamped NONE; adding a row to the route
+     * table in innertube.c is all it takes once they are verified. */
+    YT_SURF_BROWSE_TV,      /* browse, TV, with the OAuth token: Start/Abos signed in */
+    YT_SURF_BROWSE_ANDROID  /* browse, ANDROID, with the OAuth token: Abos fallback */
+} yt_surface_t;
+
 typedef struct {
     yt_video_t items[YT_LIST_MAX];
     int count;
     char continuation[YT_CONTINUATION_MAX]; /* empty string if none */
+    /* The request that produced this page, i.e. where `continuation` goes
+     * back to; only meaningful together with a non-empty token. YT_SURF_NONE
+     * when the request has no (verified) continuation route. Set by
+     * innertube.c after a successful parse — the parser itself never knows
+     * the endpoint and leaves it NONE. */
+    yt_surface_t surface;
+    /* The visitor id that goes with `continuation`, for the surfaces whose
+     * tokens are bound to one (YT_SURF_BROWSE_WEB): YouTube answers a token
+     * sent with a different id, or none, with a 200 and an empty shell — no
+     * error, just zero rows. It is the visitorData of the page-1 response, and
+     * every later page carries the same one forward (a continuation response
+     * is never allowed to replace it), so the id is stable for the whole
+     * list however many other requests the app makes meanwhile — the global
+     * one in innertube.c is rewritten by every unfiltered response, e.g. a
+     * player call. Empty for surfaces that need none. */
+    char visitor[YT_VISITOR_MAX];
 } yt_video_list_t;
 
 typedef struct {

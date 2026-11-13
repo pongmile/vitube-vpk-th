@@ -28,14 +28,120 @@ static void copy_str(char *dst, size_t cap, const char *src) {
     dst[n] = '\0';
 }
 
+/* What the most recent parse had to throw away, kept so that a drop is
+ * something a test or a log line can see instead of an empty list that merely
+ * looks like "no more pages". The parse entry points reset both; the app only
+ * ever parses one response at a time (the fetch tasks block the UI), so plain
+ * statics are enough and parse.c stays free of any platform header. */
+static int g_dropped_continuation_len;
+static int g_dropped_items;
+
+int yt_parse_last_dropped_continuation_len(void) {
+    return g_dropped_continuation_len;
+}
+
+int yt_parse_last_dropped_items(void) {
+    return g_dropped_items;
+}
+
+static void reset_drop_counters(void) {
+    g_dropped_continuation_len = 0;
+    g_dropped_items = 0;
+}
+
 /* A continuation token is only useful whole. The home feed hands out tokens
- * of 4 KB and more — well past YT_CONTINUATION_MAX — and copy_str would store
- * a truncated one that looks valid to every caller and is rejected by the
- * API. Storing nothing instead makes an empty continuation mean exactly
- * "cannot load more", which is what the callers already test for. */
+ * of 4 KB and more — past the old 2048-byte YT_CONTINUATION_MAX — and
+ * copy_str would store a truncated one that looks valid to every caller and
+ * is rejected by the API. Storing nothing instead makes an empty continuation
+ * mean exactly "cannot load more", which is what the callers already test
+ * for. That used to happen without a trace (the Start tab simply never paged,
+ * 2026-11); the length of the token that did not fit is now recorded. */
 static void set_continuation(char *dst, size_t cap, const char *token) {
-    if (!token || strlen(token) >= cap) return;
+    if (!token) return;
+    size_t len = strlen(token);
+    if (len >= cap) {
+        g_dropped_continuation_len = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+        return;
+    }
     snprintf(dst, cap, "%s", token);
+}
+
+/* The next-page token of a response, offered key by key from the walks below.
+ *
+ * Which keys carry one, by response shape (all of these sit under whatever
+ * list the page is about, so the walks find them wherever the surface nests
+ * them):
+ *   - nextContinuationData.continuation: the single-column browse shape the
+ *     anonymous VISIONOS feed and the TV client use (page 1: under
+ *     sectionListRenderer.continuations[] / gridRenderer.continuations[]),
+ *     and also the follow-up pages' continuationContents.<x>Continuation
+ *     .continuations[];
+ *   - continuationCommand.token: the web-style continuationItemRenderer,
+ *     which a continuation response may deliver inside
+ *     onResponseReceivedActions[].appendContinuationItemsAction
+ *     .continuationItems[].
+ * NEVER reloadContinuationData: its token reloads the same page from the top
+ * (the VISIONOS home feed has one 8304 characters long right after the real
+ * one), and offering it as "the next page" would loop the first page forever.
+ * It is excluded simply by not being listed here.
+ *
+ * The first token in document order wins, even when it did not fit and was
+ * dropped: a later token in the same response belongs to something else (a
+ * shelf, a chip) and loading it would silently show the wrong content, where
+ * no token at all is an honest end of the list plus a visible drop count. */
+static void consider_continuation(const char *key, json_t *value, char *dst,
+                                  size_t cap) {
+    if (dst[0] || g_dropped_continuation_len) return;
+    if (strcmp(key, "nextContinuationData") == 0)
+        set_continuation(dst, cap,
+                         json_string_value(json_object_get(value,
+                                                           "continuation")));
+    else if (strcmp(key, "continuationCommand") == 0)
+        set_continuation(dst, cap,
+                         json_string_value(json_object_get(value, "token")));
+}
+
+/* Keys whose value is one video-like row (see walk()). */
+static int is_video_item_key(const char *key) {
+    return strcmp(key, "videoWithContextData") == 0 ||
+           strcmp(key, "tileRenderer") == 0 ||
+           strcmp(key, "compactVideoRenderer") == 0 ||
+           strcmp(key, "videoWithContextRenderer") == 0 ||
+           strcmp(key, "videoRenderer") == 0 ||
+           strcmp(key, "gridVideoRenderer") == 0 ||
+           strcmp(key, "reelItemRenderer") == 0;
+}
+
+/* The visitorData string of a response, in document order the first one. See
+ * parse.h. A cheap scan instead of a parse: it is wanted on every InnerTube
+ * response, which can be two megabytes, and the field sits in responseContext
+ * near the top with a value that is plain base64url (percent-escaped padding
+ * at most) and has no JSON escapes to unpick. A value that does have a
+ * backslash is refused rather than half-decoded: it would go out in a header
+ * as something YouTube never issued. */
+int yt_parse_visitor_data(const char *json, char *out, size_t cap) {
+    if (!out || !cap) return 0;
+    out[0] = '\0';
+    if (!json) return 0;
+    static const char KEY[] = "\"visitorData\":\"";
+    const char *key = strstr(json, KEY);
+    if (!key) return 0;
+    /* sizeof-1 = the literal's length, so the offset cannot drift off by a
+     * character the way a hand-counted one did (innertube.c history: every
+     * visitor id lost its first character and every VISIONOS request was
+     * answered with LOGIN_REQUIRED). */
+    const char *value = key + (sizeof KEY - 1);
+    const char *end = value;
+    while (*end && *end != '"') {
+        if (*end == '\\') return 0;
+        end++;
+    }
+    if (*end != '"' || end == value) return 0;
+    size_t len = (size_t)(end - value);
+    if (len >= cap) return 0;
+    memcpy(out, value, len);
+    out[len] = '\0';
+    return (int)len;
 }
 
 /* "text" objects come as {"runs":[{"text":..}, ..]} or {"simpleText":..};
@@ -459,19 +565,8 @@ static void walk_channels(json_t *node, yt_channel_list_t *out) {
                 if (c->channel_id[0] && c->title[0]) out->count++;
                 continue;
             }
-            if (!out->continuation[0]) {
-                if (strcmp(key, "nextContinuationData") == 0) {
-                    set_continuation(out->continuation,
-                                     sizeof out->continuation,
-                                     json_string_value(json_object_get(
-                                         value, "continuation")));
-                } else if (strcmp(key, "continuationCommand") == 0) {
-                    set_continuation(out->continuation,
-                                     sizeof out->continuation,
-                                     json_string_value(json_object_get(
-                                         value, "token")));
-                }
-            }
+            consider_continuation(key, value, out->continuation,
+                                  sizeof out->continuation);
             walk_channels(value, out);
         }
     } else if (json_is_array(node)) {
@@ -500,6 +595,13 @@ static void walk(json_t *node, yt_video_list_t *out, yt_channel_list_t *chans) {
                 if (c->channel_id[0] && c->title[0]) chans->count++;
                 continue; /* no videos nested inside a channel result */
             }
+            if (out->count >= YT_LIST_MAX && is_video_item_key(key)) {
+                /* Counted, not descended into: a full list has no use for
+                 * the row, and the tokens inside a video renderer are never
+                 * the page's own. See yt_parse_last_dropped_items(). */
+                g_dropped_items++;
+                continue;
+            }
             if (out->count < YT_LIST_MAX && strcmp(key, "videoWithContextData") == 0) {
                 yt_video_t *v = &out->items[out->count];
                 memset(v, 0, sizeof *v);
@@ -526,19 +628,8 @@ static void walk(json_t *node, yt_video_list_t *out, yt_channel_list_t *chans) {
                 if (v->video_id[0] && v->title[0]) out->count++;
                 continue; /* no nested videos inside a renderer */
             }
-            if (!out->continuation[0]) {
-                if (strcmp(key, "nextContinuationData") == 0) {
-                    set_continuation(out->continuation,
-                                     sizeof out->continuation,
-                                     json_string_value(json_object_get(
-                                         value, "continuation")));
-                } else if (strcmp(key, "continuationCommand") == 0) {
-                    set_continuation(out->continuation,
-                                     sizeof out->continuation,
-                                     json_string_value(json_object_get(
-                                         value, "token")));
-                }
-            }
+            consider_continuation(key, value, out->continuation,
+                                  sizeof out->continuation);
             walk(value, out, chans);
         }
     } else if (json_is_array(node)) {
@@ -570,6 +661,7 @@ void yt_sort_newest_first(yt_video_list_t *list) {
 
 int yt_parse_video_list(const char *json, size_t len, yt_video_list_t *out) {
     memset(out, 0, sizeof *out);
+    reset_drop_counters();
     json_error_t err;
     json_t *root = json_loadb(json, len, 0, &err);
     if (!root) return -1;
@@ -581,6 +673,7 @@ int yt_parse_video_list(const char *json, size_t len, yt_video_list_t *out) {
 int yt_parse_search(const char *json, size_t len, yt_video_list_t *out,
                     yt_channel_list_t *out_channels) {
     memset(out, 0, sizeof *out);
+    reset_drop_counters();
     if (out_channels) memset(out_channels, 0, sizeof *out_channels);
     json_error_t err;
     json_t *root = json_loadb(json, len, 0, &err);
@@ -595,6 +688,7 @@ int yt_parse_search(const char *json, size_t len, yt_video_list_t *out,
 
 int yt_parse_channel_list(const char *json, size_t len, yt_channel_list_t *out) {
     memset(out, 0, sizeof *out);
+    reset_drop_counters();
     json_error_t err;
     json_t *root = json_loadb(json, len, 0, &err);
     if (!root) return -1;
@@ -606,6 +700,7 @@ int yt_parse_channel_list(const char *json, size_t len, yt_channel_list_t *out) 
 int yt_parse_channel_page(const char *json, size_t len, yt_video_list_t *out,
                           char *out_title, size_t title_cap) {
     memset(out, 0, sizeof *out);
+    reset_drop_counters();
     if (out_title && title_cap) out_title[0] = '\0';
     json_error_t err;
     json_t *root = json_loadb(json, len, 0, &err);
