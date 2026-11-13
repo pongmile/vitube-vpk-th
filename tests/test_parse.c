@@ -71,6 +71,22 @@ static void check_home_pages(void) {
           "page 4 expected its 12892-char token, got %zu (dropped: %d)",
           strlen(page.continuation), yt_parse_last_dropped_continuation_len());
 
+    /* The headroom the limit is sized for. The tokens captured here are the DE
+     * ones (about 2.3 KB more a page); the same feed in TH grows by about
+     * 3.3 KB a page (both measured live on 2026-11-13). The token that page 4
+     * carries plus three more pages of that faster growth must still fit, or
+     * a long scroll would end silently on a token that no longer does. The
+     * limit is the constant itself, not a copy of its value, so changing it
+     * either way is judged here. */
+    {
+        const size_t growth_th = 3300, more_pages = 3;
+        size_t p4 = strlen(page.continuation);
+        CHECK(p4 + more_pages * growth_th < (size_t)YT_CONTINUATION_MAX,
+              "YT_CONTINUATION_MAX %d does not carry page 4's %zu-char token "
+              "and %zu more pages of %zu chars each", YT_CONTINUATION_MAX, p4,
+              more_pages, growth_th);
+    }
+
     /* The same page 2 without the app's fields filter: same rows, same token;
      * the filter only removes things the parser never reads. */
     n = page_of("fixtures/browse_home_visionos_page2_nofields.json", &page);

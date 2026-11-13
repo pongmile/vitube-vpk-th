@@ -24,13 +24,28 @@
  * tests/fixtures/browse_home_visionos.json), so the Start tab had no token
  * and could never load a second page. And a token grows with every page it
  * is passed on: measured live on that feed, page 2 returns a 7498-character
- * one, page 3 10788, page 4 12892. 16384 carries that through the page cap
- * (list_screen.c ITEMS_MAX) with a margin; the drop stays visible
- * (yt_parse_last_dropped_continuation_len) should it ever not be enough. The
- * other token in each response, reloadContinuationData, is never a next page
- * and is ignored by key, not by size. Every list carries one of these buffers
- * (all static, or inside one fetch task on the main thread's stack). */
-#define YT_CONTINUATION_MAX 16384
+ * one, page 3 10788, page 4 12892. How fast it grows differs by region; both
+ * were measured live on 2026-11-13: about 2.3 KB a page in DE, about 3.3 KB in
+ * TH. The first limit here, 16384, was a margin over page 4 only: it holds the
+ * token of page 5 but not the next (17.5 KB DE, 19.5 KB TH), so a long scroll
+ * ended early, silently, on a token that did not fit. 24576 holds the token
+ * of page 7 at the TH rate (22.8 KB) and of page 9 at the DE rate (24.4 KB),
+ * while the list is full (list_screen.c ITEMS_MAX, 240 rows) after about five
+ * pages of the sizes seen (76, 62, 62, 32 rows ...). The drop stays visible
+ * (yt_parse_last_dropped_continuation_len, logged by innertube.c) should it
+ * ever not be enough. The other token in each response, reloadContinuationData,
+ * is never a next page and is ignored by key, not by size.
+ *
+ * What it costs: every list carries one of these buffers, and every struct
+ * that embeds one grew by the difference (8 KiB). They are static in
+ * list_screen.c (five VideoListState and two ChannelListState, one buffer
+ * each: 57344 bytes more, 1071552 in all) or inside a fetch task on the main
+ * thread's stack, which src/main.c sets to 2 MiB: the deepest chain of those
+ * (the Abos channel list opening the Abos feed, or a search: two token
+ * buffers each) is about 182 KB, with the frames around it about 186 KB, under
+ * a tenth of it. The worker thread that runs the request only gets a pointer
+ * into that stack, never a copy. */
+#define YT_CONTINUATION_MAX 24576
 /* The visitor id a continuation has to be sent with: the visitorData string
  * of the response that issued the token (~445 characters seen, base64url).
  * See yt_video_list_t.visitor. */
