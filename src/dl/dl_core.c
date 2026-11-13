@@ -410,7 +410,16 @@ int dl_core_load(DlCore *c) {
             int64_t psize = o->fs_size(o->user, part);
             if (psize < 0) {
                 int64_t msz = o->fs_size(o->user, mp4);
-                if (msz > 0 && copy.pub.bytes_total > 0 &&
+                /* Only an entry the index shows as "was running" (queued:
+                 * dl_index_parse folds resolving, downloading, waiting and
+                 * verifying into it) can have crashed between the rename
+                 * and the index write. A FAILED one with a full-size .mp4
+                 * is the other way round: the player reported that file as
+                 * unplayable (dl_report_bad_file leaves it on the card until
+                 * the retry), and promoting it here would offer the same
+                 * broken file as a finished download again after every
+                 * restart. */
+                if (state == DL_QUEUED && msz > 0 && copy.pub.bytes_total > 0 &&
                     msz == copy.pub.bytes_total) {
                     /* Verified and renamed, then the app died before the
                      * index said so. */
