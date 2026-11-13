@@ -39,8 +39,10 @@ jobs:
       - name: Host-side tests
         run: |
           # t NAME prints the name of the test whose build and run follow, and
-          # the trap names it again if any of those commands fails.
-          t() { current=$1; echo "=== $1"; }
+          # the trap names it again if any of those commands fails. The notice
+          # at the end lists what ran, so the run page shows what was covered.
+          ran=()
+          t() { current=$1; ran+=("$1"); echo "=== $1"; }
           trap 'echo "::error title=Host-side tests::${current:-setup} failed"' ERR
 
           t test_thai_shape
@@ -81,7 +83,7 @@ jobs:
           # jansson is vendored and not ours to make warning-free, so its
           # objects are built apart, without -Werror, and shared by the
           # parser tests and the download engine's below.
-          t jansson
+          current="jansson (build)"; echo "=== $current"
           mkdir -p /tmp/js
           for f in dump error hashtable hashtable_seed load memory pack_unpack \
                    strbuffer strconv utf value version; do
@@ -114,6 +116,8 @@ jobs:
               tests/test_dl_core.c src/dl/dl_core.c src/dl/dl_index.c \
               src/dl/dl_mp4.c /tmp/js/*.o
           ASAN_OPTIONS=detect_leaks=0 /tmp/tdl_san
+
+          echo "::notice title=Host-side tests::${#ran[@]} passed: $(IFS=";"; echo "${ran[*]}")"
 
   vpk:
     runs-on: ubuntu-latest
