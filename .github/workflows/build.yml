@@ -184,13 +184,33 @@ jobs:
         with:
           name: ViTube-vpk
           path: dist
+      # A release with no VPK, or an empty one, is worse than no release: stop
+      # here, loudly, before anything is published.
       # A fixed asset name keeps releases/latest/download/ViTube-TH.vpk working.
-      - run: mv dist/ViTube.vpk dist/ViTube-TH.vpk
+      # The checksum is taken here, in dist/, so the line names the file as it
+      # is published, with no path: `sha256sum -c` next to the download takes it
+      # as is.
+      - name: Name the VPK, check it, checksum it
+        working-directory: dist
+        run: |
+          if [ ! -f ViTube.vpk ]; then
+            echo "::error title=No VPK::the ViTube-vpk artifact holds no ViTube.vpk"
+            ls -la
+            exit 1
+          fi
+          if [ ! -s ViTube.vpk ]; then
+            echo "::error title=Empty VPK::ViTube.vpk is empty"
+            exit 1
+          fi
+          mv ViTube.vpk ViTube-TH.vpk
+          sha256sum ViTube-TH.vpk | tee ViTube-TH.vpk.sha256
       # Pinned to a commit (the release of v2.6.2, which is what v2 points to
       # today): this action runs with a token that can write releases.
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: ViTube TH ${{ github.ref_name }}
           body_path: .github/release-notes.md
-          files: dist/ViTube-TH.vpk
+          files: |
+            dist/ViTube-TH.vpk
+            dist/ViTube-TH.vpk.sha256
           fail_on_unmatched_files: true
