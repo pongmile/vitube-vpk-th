@@ -428,6 +428,8 @@ static void test_channel_uploads(void) {
     int rc = yt_channel_videos("UCabcdefghijklmnopqrstuv", NULL, &page, title, sizeof title);
     CHECK(rc == 0 && page.count == 15, "rc %d count %d", rc, page.count);
     CHECK(has_header(&g_req[0], "X-Youtube-Client-Name: 7") && !has_header(&g_req[0], "Authorization"), "page 1 is anonymous TV");
+    CHECK(strcmp(g_req[0].url, API_URL "browse?prettyPrint=false&" PLAIN_FIELDS) == 0,
+          "page 1 keeps the plain filter (an unknown field name is an HTTP 400 on the TV client): %s", g_req[0].url);
     CHECK(strstr(g_req[0].body, "VLUUabcdefghijklmnopqrstuv") != NULL, "uploads playlist id in the body: %s", g_req[0].body);
     CHECK(page.surface == YT_SURF_CHANNEL_TV, "surface %d", (int)page.surface);
     CHECK(strlen(page.continuation) == 124, "token %zu", strlen(page.continuation));
