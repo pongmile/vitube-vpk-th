@@ -6,6 +6,7 @@
  * main() when the process is torn down externally. */
 #include "ui/list_screen.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <limits.h>
 #include <string.h>
@@ -16,6 +17,7 @@
 
 #include "app.h"
 #include "dl/dl.h"
+#include "log.h"
 #include "net/netwatch.h"
 #include "ui/net_task.h"
 #include "ui/downloads_screen.h"
@@ -101,7 +103,21 @@ typedef enum {
 typedef struct {
     yt_video_t items[ITEMS_MAX];
     int count;
+    /* The next page of this list, and what it takes to ask for it: the token,
+     * the surface it was issued on (which request it goes back to) and, for
+     * the surfaces that need one, the visitor id it is bound to (see
+     * yt_video_list_t). They are written together by video_list_absorb(),
+     * cleared together by video_list_end_paging() / video_list_restart() / a
+     * memset, and read together by load_more(): a token sent anywhere but
+     * where it was issued is an error or, worse, a silent empty page, so one
+     * stored without the others, or kept across a fresh load of the same
+     * list, would be sent to the wrong place. Empty token = no more pages,
+     * and then the surface is YT_SURF_NONE and the visitor empty.
+     * cont_fails counts load-more attempts that failed in a row. */
     char continuation[YT_CONTINUATION_MAX];
+    yt_surface_t cont_surface;
+    char cont_visitor[YT_VISITOR_MAX];
+    int cont_fails;
     int cursor;
     int top; /* first row in view — see ListScroll */
     int loaded; /* has a fetch ever completed (successfully or not) */
@@ -145,6 +161,14 @@ static volatile int g_fetch_cancel;
  * retry in list_screen_run(). */
 static unsigned g_home_net_generation;
 
+/* No next page, and nothing left of the one there was. */
+static void video_list_end_paging(VideoListState *list) {
+    list->continuation[0] = '\0';
+    list->cont_surface = YT_SURF_NONE;
+    list->cont_visitor[0] = '\0';
+    list->cont_fails = 0;
+}
+
 static void video_list_absorb(VideoListState *list, const yt_video_list_t *page) {
     for (int i = 0; i < page->count && list->count < ITEMS_MAX; i++) {
         int duplicate = 0;
@@ -156,8 +180,38 @@ static void video_list_absorb(VideoListState *list, const yt_video_list_t *page)
         }
         if (!duplicate) list->items[list->count++] = page->items[i];
     }
-    snprintf(list->continuation, sizeof list->continuation, "%s",
-             page->continuation);
+    /* The page's token replaces the list's, with the surface and visitor it
+     * came with. A page whose request has no verified route (surface NONE:
+     * the signed-in Start and the Abos feed, for now) keeps no token at all,
+     * so nothing can offer a load-more that is not going to work. */
+    if (page->continuation[0] && page->surface != YT_SURF_NONE) {
+        snprintf(list->continuation, sizeof list->continuation, "%s",
+                 page->continuation);
+        list->cont_surface = page->surface;
+        snprintf(list->cont_visitor, sizeof list->cont_visitor, "%s",
+                 page->visitor);
+        list->cont_fails = 0;
+    } else {
+        video_list_end_paging(list);
+    }
+    /* A full list has no room for another page, and nothing may be left
+     * waiting on one: every trigger tests the token, so a token kept here
+     * would offer "Down loads more" on a row that can never get any. */
+    if (list->count >= ITEMS_MAX) video_list_end_paging(list);
+}
+
+/* Empties a list for a fresh first page: the rows, the cursor and scroll, AND
+ * the paging state. The token of the page that was here belongs to that page's
+ * request — the account, the query, the client and the visitor id may all have
+ * changed since — so it never outlives the rows it continued. (Every
+ * `count = 0` of a video list used to be written out by hand, and only the
+ * search list's token was ever cleared.) */
+static void video_list_restart(VideoListState *list) {
+    list->count = 0;
+    list->cursor = 0;
+    list->top = 0;
+    video_list_end_paging(list);
+    list_scroll_reset(&list->scroll);
 }
 
 static void channel_list_absorb(ChannelListState *list,
@@ -180,7 +234,6 @@ static void channel_list_absorb(ChannelListState *list,
 
 typedef struct {
     const char *query;
-    const char *continuation;
     volatile int *cancel;
     yt_video_list_t page;
     yt_channel_list_t channels;
@@ -188,8 +241,6 @@ typedef struct {
 
 static int search_task(void *opaque) {
     SearchTask *task = opaque;
-    if (task->continuation && task->continuation[0])
-        return yt_continue(task->continuation, task->cancel, &task->page);
     /* One request for both: the search response carries the channel hits
      * alongside the videos, and IT_LIST_FIELDS does not filter them out. */
     return yt_search(task->query, task->cancel, &task->page, &task->channels);
@@ -197,7 +248,7 @@ static int search_task(void *opaque) {
 
 static void run_search(const char *query) {
     g_fetch_cancel = 0;
-    SearchTask task = { query, NULL, &g_fetch_cancel, {0} };
+    SearchTask task = { query, &g_fetch_cancel, {0} };
     int ret = vt_ui_run_net_task(vt_str(S_SEARCHING), search_task, &task,
                                  &g_fetch_cancel);
     g_search.loaded = 1;
@@ -206,10 +257,7 @@ static void run_search(const char *query) {
         vt_ui_toast(vt_str(S_SEARCH_FAILED), vt_str(S_CHECK_NETWORK), 120);
         return;
     }
-    g_search.count = 0;
-    g_search.cursor = 0;
-    g_search.top = 0;
-    list_scroll_reset(&g_search.scroll);
+    video_list_restart(&g_search);
     snprintf(g_search_query, sizeof g_search_query, "%s", query);
     /* Only queries that actually returned: a list of failed attempts is
      * not a list of what the user was looking for. */
@@ -229,14 +277,117 @@ static void run_search(const char *query) {
                              : VIEW_VIDEOS;
 }
 
-static void load_more_search(void) {
-    if (!g_search.continuation[0] || g_search.count >= ITEMS_MAX) return;
-    g_fetch_cancel = 0;
-    SearchTask task = { NULL, g_search.continuation, &g_fetch_cancel, {0} };
-    int ret = vt_ui_run_net_task(vt_str(S_LOADING_MORE), search_task, &task,
-                                 &g_fetch_cancel);
-    g_search.continuation[0] = '\0';
-    if (ret == 0 && !g_fetch_cancel) video_list_absorb(&g_search, &task.page);
+/* True for a list that has a next page it knows how to ask for. */
+static int list_can_page(const VideoListState *list) {
+    return list->continuation[0] && list->cont_surface != YT_SURF_NONE;
+}
+
+/* What a load-more hands to the worker: its own COPY of the token, surface and
+ * visitor, in the caller's (main-thread) frame. vt_ui_run_net_task may run the
+ * task again after a dropped connection, for up to 45 s, while this screen
+ * keeps existing; the worker must never be reading through a pointer into a
+ * list that something else may rewrite, and nothing here may live on the
+ * worker thread's own, much smaller stack. */
+typedef struct {
+    char continuation[YT_CONTINUATION_MAX];
+    yt_surface_t surface;
+    char visitor[YT_VISITOR_MAX];
+    volatile int *cancel;
+    yt_video_list_t page;
+} MoreTask;
+
+static int more_task(void *opaque) {
+    MoreTask *task = opaque;
+    return yt_continue(task->continuation, task->surface, task->visitor,
+                       task->cancel, &task->page);
+}
+
+/* Loads the next page of a video list that has a token: Start (signed out),
+ * Suche and a channel's videos — whichever the lists' cont_surface says can
+ * page; never the history, which is local and has none. Which request the
+ * token goes back to travels with it; this function does not know or care.
+ *
+ * What an outcome does to the token:
+ *  - rows arrived: the page's own token replaces it (video_list_absorb);
+ *  - the transport or the API failed: it is KEPT and one toast says so, so the
+ *    next press of Down at the end, or the next fling into it, tries again.
+ *    It used to be thrown away on ANY outcome, which turned one dropped
+ *    packet into "this list ends here" for the rest of the session. Three
+ *    failures in a row end the paging instead, so a token that has expired
+ *    does not cost a spinner on every press for the rest of the session;
+ *  - Circle on the spinner: KEPT, quietly, and not counted as a failure: that
+ *    was the user's own decision;
+ *  - HTTP 200 with no rows at all: YouTube's answer to a stale token or one
+ *    sent with the wrong visitor id. Not an error the user can act on and not
+ *    a toast: the token is cleared and the list simply has no next page.
+ *
+ * A page that arrives but adds nothing NEW — every row was already in the list
+ * (the home feed repeats 9-21 videos per page across its shelves) — is
+ * followed by up to two more pages, so one press does not end on a screen
+ * that looks like nothing happened.
+ *
+ * One call is a bounded number of attempts and the callers must not loop on
+ * it: vt_ui_run_net_task already waits out and retries a dropped connection
+ * for up to 45 s, and a held D-pad is neutralised by the caller (see
+ * nav_hold_spent).
+ *
+ * Returns 1 when rows were appended, 0 otherwise. */
+static int load_more(VideoListState *list) {
+    if (!list->continuation[0]) return 0;
+    if (list->cont_surface == YT_SURF_NONE || list->count >= ITEMS_MAX) {
+        /* A token with no way back, or no room for what it brings: neither
+         * will change. */
+        video_list_end_paging(list);
+        return 0;
+    }
+    MoreTask task;
+    int added = 0;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        memset(&task, 0, sizeof task);
+        snprintf(task.continuation, sizeof task.continuation, "%s",
+                 list->continuation);
+        task.surface = list->cont_surface;
+        snprintf(task.visitor, sizeof task.visitor, "%s", list->cont_visitor);
+        task.cancel = &g_fetch_cancel;
+        g_fetch_cancel = 0;
+        int ret = vt_ui_run_net_task(vt_str(S_LOADING_MORE), more_task, &task,
+                                     &g_fetch_cancel);
+        if (g_fetch_cancel) return added > 0;
+        if (ret < 0) {
+            vt_ui_toast(vt_str(S_NETWORK_ERROR),
+                        yt_last_error()[0] ? yt_last_error()
+                                           : vt_str(S_CHECK_NETWORK), 120);
+            if (++list->cont_fails >= 3) {
+                vt_log("list: load-more failed 3 times in a row, ending paging");
+                video_list_end_paging(list);
+            }
+            return added > 0;
+        }
+        if (task.page.count == 0) {
+            vt_log("list: next page had 0 rows (stale or mismatched token), "
+                   "ending paging");
+            video_list_end_paging(list);
+            return added > 0;
+        }
+        int before = list->count;
+        video_list_absorb(list, &task.page);
+        added += list->count - before;
+        /* Done once something new is on screen, or there is nothing to follow
+         * (no token left, or the list is full). */
+        if (added > 0 || !list->continuation[0]) break;
+    }
+    return added > 0;
+}
+
+/* A direction still held when a blocking load ends repeats straight into the
+ * next one: the load took longer than the repeat delay, so the very next frame
+ * is due another step. After a load that failed that would be an endless
+ * retry for as long as the button stays down, each with its own spinner and
+ * toast. Marking the held direction as already used keeps vt_nav_repeat quiet
+ * until it is released; the next press starts afresh. */
+static void nav_hold_spent(VtNavRepeat *nav, unsigned direction) {
+    nav->direction = direction;
+    nav->next_time_us = UINT64_MAX;
 }
 
 typedef struct {
@@ -265,10 +416,7 @@ static void run_home(void) {
      * already; only a later one is a reason to try again by itself. */
     g_home_net_generation = vt_netwatch_generation();
     if (g_fetch_cancel) return;
-    g_home.count = 0;
-    g_home.cursor = 0;
-    g_home.top = 0;
-    list_scroll_reset(&g_home.scroll);
+    video_list_restart(&g_home);
     if (ret == 0) video_list_absorb(&g_home, &task.page);
     if (!g_home.loaded)
         vt_ui_toast(vt_str(S_NO_VIDEOS_LOADED),
@@ -303,10 +451,7 @@ static void run_abos_feed(void) {
         vt_ui_toast(vt_str(S_NO_NEW_VIDEOS), detail, 150);
         return;
     }
-    g_abos_feed.count = 0;
-    g_abos_feed.cursor = 0;
-    g_abos_feed.top = 0;
-    list_scroll_reset(&g_abos_feed.scroll);
+    video_list_restart(&g_abos_feed);
     video_list_absorb(&g_abos_feed, &task.page);
 }
 
@@ -447,10 +592,7 @@ static void run_channel_detail(const yt_channel_t *channel) {
     g_channel = *channel;
     if (task.title[0])
         snprintf(g_channel.title, sizeof g_channel.title, "%s", task.title);
-    g_channel_videos.count = 0;
-    g_channel_videos.cursor = 0;
-    g_channel_videos.top = 0;
-    list_scroll_reset(&g_channel_videos.scroll);
+    video_list_restart(&g_channel_videos);
     g_channel_videos.loaded = 1;
     video_list_absorb(&g_channel_videos, &task.page);
     g_view[g_tab] = VIEW_CHANNEL_DETAIL;
@@ -578,8 +720,9 @@ static ChannelListState *active_channel_list(void) {
  *
  * g_channel_videos and g_channel are deliberately left alone: they are
  * overwritten by run_channel_detail() before that view can be entered again,
- * so nothing stale can surface, and wiping them would blank a channel page
- * the user may currently be reading from the (anonymous) search side. */
+ * so nothing stale can surface (its continuation token and surface go with
+ * the rows, and are anonymous anyway), and wiping them would blank a channel
+ * page the user may currently be reading from the (anonymous) search side. */
 static void drop_lists(int include_search) {
     memset(&g_home, 0, sizeof g_home);
     memset(&g_abos_feed, 0, sizeof g_abos_feed);
@@ -1042,8 +1185,10 @@ void list_screen_run(void) {
             if (direction & SCE_CTRL_DOWN) {
                 if (videos->cursor < videos->count - 1) {
                     videos->cursor++;
-                } else if (videos == &g_search && videos->continuation[0]) {
-                    load_more_search();
+                } else if (list_can_page(videos)) {
+                    /* Down on the last row of any list that has a next page:
+                     * Start (signed out), Suche, a channel's videos. */
+                    if (!load_more(videos)) nav_hold_spent(&nav, SCE_CTRL_DOWN);
                     resync_input(&previous);
                     if (videos->cursor < videos->count - 1) videos->cursor++;
                 }
@@ -1083,12 +1228,14 @@ void list_screen_run(void) {
                     videos->cursor = row;
                 }
             } else if ((settled & VT_KINETIC_SETTLED_AT_END) &&
-                       videos == &g_search && videos->continuation[0]) {
+                       list_can_page(videos)) {
                 /* The touch side of the D-pad's "Down on the last row loads
                  * the next page": flinging into the end of the results, or
                  * pulling up past it, asks for more. Only once the list is
-                 * at rest, so the spinner does not cut the bounce off. */
-                load_more_search();
+                 * at rest, so the spinner does not cut the bounce off. A
+                 * failed load keeps its token and waits for the next gesture
+                 * — nothing here repeats by itself. */
+                load_more(videos);
                 resync_input(&previous);
             }
             /* Same as in the channel list: no playing a row that a drag or
