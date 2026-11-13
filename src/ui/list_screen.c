@@ -282,6 +282,24 @@ static int list_can_page(const VideoListState *list) {
     return list->continuation[0] && list->cont_surface != YT_SURF_NONE;
 }
 
+/* How long "no more videos" stays up, in frames (vt_ui_toast is modal: it
+ * draws that many frames and reads no input, so every frame of it is a frame
+ * the user waits). Three short words are read in about half a second; 60 frames
+ * is one second at the console's 60 Hz, the shortest toast in the app (the
+ * others run 90 to 150 frames, and they carry a second line). */
+#define NO_MORE_TOAST_FRAMES 60
+
+/* A load-more that ended in a dead end: paging stops for this list and the user
+ * is told, once. "Once" is not a flag: ending the paging clears the token, so
+ * list_can_page() is false from here on and neither a held Down nor a fling nor
+ * another press can start another load, hence another toast, for this list.
+ * What brings the toast back is a list of its own, a fresh first page that
+ * dead-ends again, which is news again. */
+static void list_paging_dead_end(VideoListState *list) {
+    video_list_end_paging(list);
+    vt_ui_toast(vt_str(S_NO_MORE_VIDEOS), NULL, NO_MORE_TOAST_FRAMES);
+}
+
 /* What a load-more hands to the worker: its own COPY of the token, surface and
  * visitor, in the caller's (main-thread) frame. vt_ui_run_net_task may run the
  * task again after a dropped connection, for up to 45 s, while this screen
@@ -318,8 +336,15 @@ static int more_task(void *opaque) {
  *  - Circle on the spinner: KEPT, quietly, and not counted as a failure: that
  *    was the user's own decision;
  *  - HTTP 200 with no rows at all: YouTube's answer to a stale token or one
- *    sent with the wrong visitor id. Not an error the user can act on and not
- *    a toast: the token is cleared and the list simply has no next page.
+ *    sent with the wrong visitor id. Not an error the user can act on, so no
+ *    "Network error": the token is cleared and the list has no next page. The
+ *    user is told so, once (list_paging_dead_end): after a spinner, a list
+ *    that silently stops growing looks exactly like the end of the feed, and
+ *    the user cannot tell it from a load that went wrong;
+ *  - the same when the page did bring rows but none that the list did not have
+ *    already and no token to go on with: a page that gave the user nothing.
+ *    A last page that does add rows (and carries no token) is NOT announced:
+ *    its rows are the answer, and the list then stops asking without a word;
  *
  * A page that arrives but adds nothing NEW — every row was already in the list
  * (the home feed repeats 9-21 videos per page across its shelves) — is
@@ -373,7 +398,7 @@ static int load_more(VideoListState *list) {
         if (task.page.count == 0) {
             vt_log("list: next page had 0 rows (stale or mismatched token), "
                    "ending paging");
-            video_list_end_paging(list);
+            list_paging_dead_end(list);
             return added > 0;
         }
         int before = list->count;
@@ -383,6 +408,11 @@ static int load_more(VideoListState *list) {
          * (no token left, or the list is full). */
         if (added > 0 || !list->continuation[0]) break;
     }
+    /* Nothing new and nothing left to ask: the last page was only repeats. The
+     * same dead end as an empty page, for the same reason (after this the
+     * user would see a spinner and no change); a token still in the list means
+     * the next press asks again instead, which is not an end. */
+    if (added == 0 && !list->continuation[0]) list_paging_dead_end(list);
     return added > 0;
 }
 

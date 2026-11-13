@@ -196,10 +196,25 @@ int h_text_y(const char *needle) {
 int h_prev_disables(void) { return h_prev_disable_calls; }
 void h_dump(const char *name) { g_dump_pending = 1; snprintf(g_dump_name, sizeof g_dump_name, "%s", name); }
 
+static char g_watch[64];
+static int g_watch_on;
+int h_watch_appearances, h_watch_frames;
+void h_watch(const char *needle) {
+    snprintf(g_watch, sizeof g_watch, "%s", needle);
+    g_watch_on = 0;
+    h_watch_appearances = h_watch_frames = 0;
+}
+
 void vita2d_swap_buffers(void) {
     memcpy(g_prev, g_ops, (size_t)g_nops * sizeof(Op));
     g_nprev = g_nops;
     h_prev_disable_calls = h_disable_calls;
+    if (g_watch[0]) {
+        int on = h_text_seen(g_watch);
+        if (on) h_watch_frames++;
+        if (on && !g_watch_on) h_watch_appearances++;
+        g_watch_on = on;
+    }
     if (g_dump_pending) {
         char path[256];
         snprintf(path, sizeof path, "out/%s.ops", g_dump_name);

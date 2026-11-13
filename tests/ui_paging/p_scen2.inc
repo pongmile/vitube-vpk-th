@@ -178,10 +178,15 @@ static void s18c(void) {
 
 /* -- 19: a stale token (HTTP 200, 0 rows): ends paging once, with no toast, however long Down is held -- */
 static void c19_empty(void) { h_more_mode = MORE_EMPTY; }
-static void c19_ended(void) { CHECK(h_ncont == 1 && g_home.continuation[0] == 0, "calls %d token '%s'", h_ncont, g_home.continuation); unseen("Network error"); }
+static void c19_ended(void) {
+    CHECK(h_ncont == 1 && g_home.continuation[0] == 0, "calls %d token '%s'", h_ncont, g_home.continuation); unseen("Network error");
+    CHECK(h_watch_appearances == 1, "Down held for 120 frames: told %d times, want once", h_watch_appearances);
+    CHECK(h_watch_frames >= 30 && h_watch_frames <= 90, "the toast is a short one: %d frames", h_watch_frames);
+}
 static void s19(void) {
     wait(3);
     press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
     call(c19_empty);
     hold_pad(BTN_DOWN, 120);
     call(c19_ended);
@@ -195,10 +200,14 @@ static void c20_b(void) {
     CHECK(g_home.continuation[0] == 0 && g_home.cont_surface == YT_SURF_NONE && g_home.cont_visitor[0] == 0 && g_home.cont_fails == 0,
           "a page with no token ends the paging: '%s' %d", g_home.continuation, (int)g_home.cont_surface);
 }
-static void c20_c(void) { CHECK(h_ncont == 2, "no call once the feed has ended: %d", h_ncont); unseen("Network error"); unseen("Loading more"); }
+static void c20_c(void) {
+    CHECK(h_ncont == 2, "no call once the feed has ended: %d", h_ncont); unseen("Network error"); unseen("Loading more");
+    CHECK(h_watch_appearances == 0, "a last page that brought rows is not announced: %d appearances", h_watch_appearances);
+}
 static void s20(void) {
     wait(3);
     press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
     call(c20_last_page);
     press(BTN_DOWN); wait(2);
     call(c20_a);
@@ -209,4 +218,70 @@ static void s20(void) {
     press_n(BTN_DOWN, 4); wait(2);
     drag(500, 420, 120, 4); wait(120);
     call(c20_c);
+}
+
+/* -- 21: a dead end is told once however long, and however often, the user keeps
+ *        asking: Down held for 600 frames, flings into the end, more presses -- */
+static void c21_once(void) {
+    CHECK(h_ncont == 1, "calls %d", h_ncont);
+    CHECK(h_watch_appearances == 1, "told %d times, want once", h_watch_appearances);
+}
+static void s21(void) {
+    wait(3);
+    press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
+    call(c19_empty);
+    hold_pad(BTN_DOWN, 600);
+    call(c21_once);
+    drag(500, 420, 120, 4); wait(120);
+    press_n(BTN_DOWN, 4); wait(70);
+    drag(500, 420, 120, 4); wait(120);
+    call(c21_once);
+}
+
+/* -- 22: the last page is nothing but repeats and has no token: the same dead end,
+ *        told once. (With a token still behind it, repeats are followed instead:
+ *        scenario 4.) -- */
+static void c22_last_is_dupes(void) { h_last_page = 1; h_more_mode = MORE_DUPES; }
+static void c22_a(void) {
+    CHECK(h_ncont == 1, "one page asked for, and it has no token to follow: %d calls", h_ncont);
+    CHECK(g_home.count == 76 && g_home.continuation[0] == 0 && g_home.cont_surface == YT_SURF_NONE && g_home.cont_visitor[0] == 0,
+          "nothing added, paging over: count %d token '%s'", g_home.count, g_home.continuation);
+    CHECK(h_watch_appearances == 1, "told %d times, want once", h_watch_appearances);
+}
+static void s22(void) {
+    wait(3);
+    press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
+    call(c22_last_is_dupes);
+    press(BTN_DOWN); wait(2);
+    call(c3_toast_up);
+    wait(70);
+    call(c22_a);
+    press_n(BTN_DOWN, 3); wait(70);
+    call(c22_a);
+}
+
+/* -- 23: each list is told its own dead end; one list's ending does not silence the next -- */
+static void c23_start(void) { CHECK(h_ncont == 1 && h_watch_appearances == 1 && g_home.continuation[0] == 0, "Start: calls %d told %d token '%s'", h_ncont, h_watch_appearances, g_home.continuation); }
+static void c23_search(void) {
+    CHECK(h_ncont == 2 && h_watch_appearances == 2, "Suche: calls %d told %d (want 2 and 2)", h_ncont, h_watch_appearances);
+    cont_is(1, "ST1", YT_SURF_SEARCH, "");
+    CHECK(g_search.continuation[0] == 0 && g_search.cont_surface == YT_SURF_NONE, "Suche keeps no token: '%s'", g_search.continuation);
+}
+static void c23_back(void) { CHECK(h_ncont == 2 && h_watch_appearances == 2, "back on Start: calls %d told %d", h_ncont, h_watch_appearances); }
+static void s23(void) {
+    wait(3);
+    press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
+    call(c19_empty);
+    press(BTN_DOWN); wait(70);              /* Start: dead end */
+    call(c23_start);
+    press(BTN_TRI); wait(4);                /* Suche: ST1 pending */
+    press_n(BTN_DOWN, 19);
+    press(BTN_DOWN); wait(70);
+    call(c23_search);
+    press(BTN_L); wait(4);                  /* back to Start, at its last row */
+    press_n(BTN_DOWN, 3); wait(70);
+    call(c23_back);
 }

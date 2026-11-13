@@ -26,6 +26,13 @@ extern int h_home_count;
 extern void (*h_in_player)(void);
 void h_set_touch(unsigned flags, int x, int y, int dx, int dy);
 int h_text_seen(const char *needle);
+/* Counts how often a text comes up on screen. h_watch() starts the count (and
+ * zeroes it); from then on every frame that is swapped in is looked at:
+ * h_watch_appearances is how many times the text went from absent to present
+ * (one toast = one appearance), h_watch_frames how many frames it was there.
+ * A toast is modal, so a scenario cannot sample it often enough from outside. */
+void h_watch(const char *needle);
+extern int h_watch_appearances, h_watch_frames;
 int h_op_count(char kind);
 unsigned h_text_color(const char *needle);
 int h_text_y(const char *needle);

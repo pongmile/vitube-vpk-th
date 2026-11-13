@@ -255,4 +255,8 @@ const char *const vt_strings_it[VT_STR_COUNT] = {
     [S_HINT_CHANNEL_SUB_DL] = "○ Indietro   ✕ Riproduci   □ Iscriviti   "
                               "SELECT Scarica",
     /* === END downloads UI === */
+
+    /* === BEGIN paging (see strings.h) === */
+    [S_NO_MORE_VIDEOS] = "Nessun altro video",
+    /* === END paging === */
 };

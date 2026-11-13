@@ -133,9 +133,10 @@ static const char *call_at(int i) { return i < stub_ncalls ? stub_calls[i] : "(n
 
 static void report(void) { printf("%d checks, %d failed\n", g_checks, g_fail); }
 
-static void (*const SCEN[])(void) = { s1, s2, s2b, s3, s4, s5, s6, s7, s8, s9, s10, s11, s13, s14, s15, s16, s16b, s17, s18, s18b, s18c, s19, s20 };
+static void (*const SCEN[])(void) = { s1, s2, s2b, s3, s4, s5, s6, s7, s8, s9, s10, s11, s13, s14, s15, s16, s16b, s17, s18, s18b, s18c, s19, s20, s21, s22, s23 };
 static const char *const NAMES[] = { "home pages by Down", "failure+hold", "3 failures", "empty page", "repeats followed",
-    "search pages", "channel pages", "signed in", "reset on sign-in/region", "cancel", "touch at end", "no token mix", "fling failing", "tab round trip", "region wipes Suche", "ITEMS_MAX exact", "ITEMS_MAX 239", "channel A/B/search", "hold fail 120", "hold ok 120", "hold tiny pages", "stale 200/0 rows", "feed ends" };
+    "search pages", "channel pages", "signed in", "reset on sign-in/region", "cancel", "touch at end", "no token mix", "fling failing", "tab round trip", "region wipes Suche", "ITEMS_MAX exact", "ITEMS_MAX 239", "channel A/B/search", "hold fail 120", "hold ok 120", "hold tiny pages", "stale 200/0 rows", "feed ends",
+    "dead end told once", "repeats-only last page", "each list told" };
 
 int main(int argc, char **argv) {
     int which = argc > 1 ? atoi(argv[1]) : 1;

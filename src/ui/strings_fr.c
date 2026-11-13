@@ -258,4 +258,8 @@ const char *const vt_strings_fr[VT_STR_COUNT] = {
     [S_HINT_CHANNEL_SUB_DL] = "○ Retour   ✕ Lire   □ S'abonner   SELECT "
                               "Télécharger",
     /* === END downloads UI === */
+
+    /* === BEGIN paging (see strings.h) === */
+    [S_NO_MORE_VIDEOS] = "Plus de vidéos",
+    /* === END paging === */
 };

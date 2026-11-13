@@ -114,7 +114,12 @@ static void c2b_after3(void) {
     CHECK(h_ncont == 3, "three failures, three calls: %d", h_ncont);
     CHECK(g_home.continuation[0] == 0 && g_home.cont_surface == YT_SURF_NONE, "token must be gone after 3 fails: '%s'", g_home.continuation);
 }
-static void c2b_still3(void) { CHECK(h_ncont == 3, "no call without a token: %d", h_ncont); }
+static void c2b_still3(void) {
+    CHECK(h_ncont == 3, "no call without a token: %d", h_ncont);
+    CHECK(h_watch_appearances == 0, "three failures are told as failures, not as 'no more videos': %d appearances", h_watch_appearances);
+}
+/* From here on, count how often "No more videos" comes up (see h_watch). */
+static void watch_no_more(void) { h_watch("No more videos"); }
 /* Inside the THIRD failure's toast: paging is already over, not still waiting
  * for the toast to end before it is. */
 static void c2b_in_toast3(void) {
@@ -126,6 +131,7 @@ static void c2b_in_toast3(void) {
 static void s2b(void) {
     wait(3);
     press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
     call(c2_fail_mode);
     press(BTN_DOWN); wait(135);
     press(BTN_DOWN); wait(135);
@@ -146,19 +152,35 @@ static void c3_check(void) {
     unseen("Network error");
     unseen("Loading more");
 }
+static void c3_toast_up(void) { seen("No more videos"); }
+static void c3_toast_over(void) {
+    unseen("No more videos");
+    CHECK(h_watch_appearances == 1 && h_watch_frames >= 30 && h_watch_frames <= 90,
+          "told once, for a second or so: %d appearances, %d frames", h_watch_appearances, h_watch_frames);
+}
+static void c3_still_once(void) {
+    CHECK(h_watch_appearances == 1, "a second press must not tell again: %d appearances", h_watch_appearances);
+}
 static void s3(void) {
     wait(3);
     press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
     call(c3_mode);
     press(BTN_DOWN); wait(2);
     call(c3_check);
+    call(c3_toast_up);        /* the dead end is told, in so many words */
+    wait(70);                 /* the toast (60 frames) is over */
+    call(c3_toast_over);
     press(BTN_DOWN); wait(2);
     call(c3_check);   /* still one call */
+    wait(70);
+    call(c3_still_once);
 }
 
 /* -- 4: a page of repeats is followed, at most two more pages -- */
 static void c4_dupes_all(void) { h_more_mode = MORE_DUPES; }
 static void c4_check_all(void) {
+    CHECK(h_watch_appearances == 0, "repeats with a token behind them are not a dead end: %d appearances", h_watch_appearances);
     CHECK(h_ncont == 3, "1 page + 2 follow-ups = 3 calls, got %d", h_ncont);
     CHECK(g_home.count == 76, "count %d", g_home.count);
     CHECK(strcmp(g_home.continuation, "HT4") == 0, "token after 3 pages '%s'", g_home.continuation);
@@ -176,6 +198,7 @@ static void c4_check_once(void) {
 static void s4(void) {
     wait(3);
     press_n(BTN_RIGHT, 19);
+    call(watch_no_more);
     call(c4_dupes_all);
     hold_pad(BTN_DOWN, 600);
     call(c4_check_all);

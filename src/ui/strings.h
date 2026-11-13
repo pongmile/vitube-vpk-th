@@ -308,6 +308,14 @@ typedef enum {
     S_HINT_CHANNEL_SUB_DL,
     /* === END downloads UI === */
 
+    /* === BEGIN paging (src/ui/list_screen.c) ===
+     * One block, appended last, like the one above. The line a list says when
+     * its paging ends on a page that gave it nothing (a stale token answers
+     * with HTTP 200 and no rows): without it that looks exactly like the end
+     * of the feed. Not said after a last page that did bring rows. */
+    S_NO_MORE_VIDEOS,
+    /* === END paging === */
+
     VT_STR_COUNT
 } VtStringId;
 
