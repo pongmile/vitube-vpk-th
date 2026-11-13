@@ -46,13 +46,22 @@
  * a tenth of it. The worker thread that runs the request only gets a pointer
  * into that stack, never a copy. */
 #define YT_CONTINUATION_MAX 24576
-/* The visitor id a continuation has to be sent with: the visitorData string
- * of the response that issued the token (~445 characters seen, base64url).
- * See yt_video_list_t.visitor. */
+/* The visitor id a continuation has to be sent with (~445 characters seen,
+ * base64url). A token is bound to the visitor ID, not to one exact string of
+ * it. Measured live on 2026-11-13 with the signed-out Start feed: the id sent
+ * with the page-1 request (X) and the visitorData that page-1 response
+ * reports (Y) are the same visitor id and differ only in an embedded
+ * timestamp or signature, and the token of that page was accepted with either;
+ * a different visitor id, or none, is what gets the empty shell (HTTP 200,
+ * zero rows). The app stores Y, the id the server itself reported for the
+ * session, and sends it with every continuation of the list. See
+ * yt_video_list_t.visitor. */
 #define YT_VISITOR_MAX 768
-/* Rows one response can hand over. The anonymous home feed delivers 66 to 84
- * video renderers in a single page (randomised per call; 76 in the fixture);
- * with a cap of 60 the tail of every page was silently dropped, and since the
+/* Rows one response can hand over. The anonymous home feed delivers 58 to 84
+ * video renderers in a first page (randomised per call: 76 in the first
+ * fixture, 59 in the filtered capture of 2026-11-13, 77 seen in TH; the later
+ * pages seen held 62, 62, 32 and 25); with a cap of 60 the tail of the larger
+ * pages was silently dropped, and since the
  * page's continuation token starts after it, paging could never bring those
  * rows back. 128 leaves room above the largest page seen. The cap also sizes
  * the channel lists (yt_channel_list_t, and ChannelListState in
@@ -97,8 +106,9 @@ typedef enum {
     /* Pageable: */
     YT_SURF_SEARCH,         /* search, ANDROID, anonymous */
     YT_SURF_BROWSE_WEB,     /* browse, VISIONOS on www.youtube.com, anonymous,
-                             * AND the visitor id the token was issued under:
-                             * the signed-out Start feed */
+                             * AND the visitor id the token was issued under
+                             * (the id, not its exact string; see
+                             * YT_VISITOR_MAX): the signed-out Start feed */
     YT_SURF_CHANNEL_TV,     /* browse, TV, anonymous, no visitor: a channel's
                              * uploads (a VLUU... playlist) */
     /* Reserved, NOT pageable yet: these need a signed-in capture to confirm
@@ -123,7 +133,8 @@ typedef struct {
     /* The visitor id that goes with `continuation`, for the surfaces whose
      * tokens are bound to one (YT_SURF_BROWSE_WEB): YouTube answers a token
      * sent with a different id, or none, with a 200 and an empty shell — no
-     * error, just zero rows. It is the visitorData of the page-1 response, and
+     * error, just zero rows (see YT_VISITOR_MAX: it is the id that counts, not
+     * the exact string). It is the visitorData of the page-1 response, and
      * every later page carries the same one forward (a continuation response
      * is never allowed to replace it), so the id is stable for the whole
      * list however many other requests the app makes meanwhile — the global

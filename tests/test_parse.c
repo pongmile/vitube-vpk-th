@@ -629,7 +629,7 @@ int main(void) {
 
     /* The anonymous home feed, captured from the VISIONOS client — the
      * surface a signed-out user now lands on (see yt_home_feed). It arrives
-     * as compactVideoRenderer: 76 of them (a page is 66-84 rows, randomised
+     * as compactVideoRenderer: 76 of them (a first page is 58-84 rows, randomised
      * per call) and a 4482-character next-page token, beside a
      * reloadContinuationData that is NOT the next page. Both numbers once
      * went wrong without a sound: YT_LIST_MAX of 60 cut the last 16 rows of

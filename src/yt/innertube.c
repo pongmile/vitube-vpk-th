@@ -56,8 +56,9 @@ typedef enum {
 /* The anonymous VISIONOS browse (Start, signed out), page 1 AND every
  * continuation: the plain filter plus the one field that carries the visitor
  * id. Without it the id stays unknown to the app — the filter strips
- * responseContext — and a continuation needs exactly the id its token was
- * issued under (see YT_SURF_BROWSE_WEB). Verified live: a "responseContext/
+ * responseContext — and a continuation needs the visitor id its token was
+ * issued under (see YT_VISITOR_MAX for what "the id" means: not the exact
+ * string). Verified live: a "responseContext/
  * visitorData" sub-path is accepted on this endpoint and the value comes back
  * about 445 characters long near the start of the body; the filtered body is
  * ~244 KB where an unfiltered one is ~649 KB, so the filter stays. This is
@@ -88,8 +89,9 @@ typedef enum {
  *
  * `fields` is what the CONTINUATION request asks for (page 1 of the same
  * surface uses the same, see the call sites). `needs_visitor`: the token is
- * only good with the visitor id of the response that issued it, so the page
- * carries that id (yt_video_list_t.visitor) and the continuation sends it.
+ * bound to the visitor id it was issued under (not to the exact string, see
+ * YT_VISITOR_MAX), so the page carries the id of the response that issued it
+ * (yt_video_list_t.visitor) and the continuation sends that.
  *
  * Only surfaces verified against the live API have a row. Pages from every
  * other request get YT_SURF_NONE, so no list ever offers a load-more that
@@ -524,9 +526,10 @@ int yt_home_feed(volatile int *cancel, yt_video_list_t *out) {
      * videos as compactVideoRenderer, which the parser already handles. It
      * works for the same reason the HLS resolve does — www.youtube.com with
      * an Origin header and the harvested visitor id, rather than the bare
-     * googleapis host that flips to LOGIN_REQUIRED. A page is 66-84 rows and
-     * carries a ~4.5 KB next-page token (tests/fixtures/browse_home_visionos
-     * .json: 76 rows, 4482 characters), which is why YT_LIST_MAX and
+     * googleapis host that flips to LOGIN_REQUIRED. A first page is 58-84
+     * rows (randomised per call; 77 seen in TH) and carries a ~4-4.5 KB next-page
+     * token (tests/fixtures/browse_home_visionos.json: 76 rows, 4482
+     * characters), which is why YT_LIST_MAX and
      * YT_CONTINUATION_MAX are sized the way they are: while they were 60 and
      * 2048 the tail of every page and the token were silently dropped and the
      * Start tab could never load more. This page is the one that is pageable:
